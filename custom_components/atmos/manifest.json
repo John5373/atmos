@@ -1,0 +1,12 @@
+{
+  "domain": "atmos_energy",
+  "name": "Atmos Energy",
+  "version": "0.1.0",
+  "documentation": "https://github.com/yourusername/ha-atmos-energy",
+  "requirements": [
+    "requests>=2.0.0",
+    "beautifulsoup4>=4.0.0"
+  ],
+  "codeowners": ["@your_github_username"],
+  "config_flow": true
+}
