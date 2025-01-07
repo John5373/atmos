@@ -1,55 +1,89 @@
 import logging
 import requests
 from bs4 import BeautifulSoup
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from homeassistant.components.sensor import SensorEntity
-from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import update_coordinator
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.util import dt as dt_util
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.typing import StateType
+from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.helpers.event import async_track_point_in_time
 
-from .const import DOMAIN, DEFAULT_NAME
+from .const import DOMAIN, DEFAULT_NAME, CONF_USERNAME, CONF_PASSWORD
 
 _LOGGER = logging.getLogger(__name__)
 
+def _get_next_4am() -> datetime:
+    """Return a datetime object for the next occurrence of 4:00 AM local time."""
+    now = dt_util.now()
+    # Set 'target' to today's 4:00 AM
+    target = now.replace(hour=4, minute=0, second=0, microsecond=0)
+    # If we are already past 4:00 AM today, schedule for tomorrow at 4:00 AM
+    if now >= target:
+        target += timedelta(days=1)
+    return target
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
-    """Set up Atmos Energy sensor based on a config entry."""
-    coordinator = AtmosEnergyCoordinator(hass, entry)
-    # Fetch initial data
-    await coordinator.async_config_entry_first_refresh()
+    """Set up the Atmos Energy sensor based on a config entry."""
+    coordinator = AtmosDailyCoordinator(hass, entry)
 
-    # Create one or more sensor entities
-    async_add_entities([AtmosEnergyUsageSensor(coordinator, entry)], True)
+    # Create the sensor entity
+    sensor = AtmosEnergyUsageSensor(coordinator, entry)
+    async_add_entities([sensor])
 
-class AtmosEnergyCoordinator(update_coordinator.DataUpdateCoordinator):
-    """Coordinator to fetch usage data from Atmos Energy."""
+    # Schedule the first daily update
+    coordinator.schedule_daily_update()
+
+class AtmosDailyCoordinator:
+    """
+    A simple coordinator-like class that handles fetching data
+    exactly once per day at 4 AM, rather than using update_interval.
+    """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
-        """Initialize the coordinator."""
+        self.hass = hass
         self.entry = entry
-        super().__init__(
-            hass,
-            _LOGGER,
-            name="AtmosEnergyCoordinator",
-            update_interval=timedelta(
-                seconds=entry.options.get("scan_interval", 3600)
-            ),  # default 1 hour if not set in options
+        self.data = None
+        self._unsub_timer = None  # hold a reference to our scheduled callback
+
+    def schedule_daily_update(self):
+        """Schedule the next daily update for 4:00 AM local time."""
+        if self._unsub_timer:
+            # If there's an existing schedule, cancel it to avoid duplicates
+            self._unsub_timer()
+            self._unsub_timer = None
+
+        next_time = _get_next_4am()
+        _LOGGER.debug("Scheduling next Atmos update at %s", next_time)
+
+        # Use async_track_point_in_time to schedule a one-time callback
+        self._unsub_timer = async_track_point_in_time(
+            self.hass,
+            self._scheduled_update_callback,
+            next_time
         )
 
-    async def _async_update_data(self):
-        """Fetch data from Atmos's site (runs in executor thread)."""
-        return await self.hass.async_add_executor_job(self._fetch_atmos_usage)
+    async def _scheduled_update_callback(self, now):
+        """Callback that fetches fresh data, then reschedules the next daily update."""
+        _LOGGER.debug("Running daily Atmos update at %s", now)
+        await self.async_request_refresh()
+        self.schedule_daily_update()
+
+    async def async_request_refresh(self):
+        """Manually trigger a data refresh and notify any listeners."""
+        try:
+            self.data = await self.hass.async_add_executor_job(self._fetch_atmos_usage)
+        except Exception as err:
+            _LOGGER.error("Error fetching Atmos data: %s", err)
+            raise UpdateFailed from err
 
     def _fetch_atmos_usage(self):
         """Do the actual requests + scraping; return a dict with latest usage info."""
-
-        # 1. Gather credentials
         username = self.entry.data[CONF_USERNAME]
         password = self.entry.data[CONF_PASSWORD]
 
-        # 2. Start session, get login page, etc. (adjust URLs, parse CSRF tokens as needed)
         login_url = "https://www.atmosenergy.com/accountcenter/login"  # example
         usage_url = "https://www.atmosenergy.com/accountcenter/usage"  # example
 
@@ -57,40 +91,32 @@ class AtmosEnergyCoordinator(update_coordinator.DataUpdateCoordinator):
         login_page = session.get(login_url)
         login_page.raise_for_status()
 
-        # Potentially parse CSRF token
-        # soup_login = BeautifulSoup(login_page.text, "html.parser")
-        # token_element = soup_login.find(...)
-        # csrf_token = token_element["value"] if token_element else ""
-
         payload = {
             "username": username,
             "password": password,
-            # "csrfmiddlewaretoken": csrf_token
+            # if needed: "csrf_token": ...
         }
-        login_response = session.post(login_url, data=payload)
-        login_response.raise_for_status()
+        login_resp = session.post(login_url, data=payload)
+        login_resp.raise_for_status()
 
-        if "Logout" not in login_response.text and "Sign Out" not in login_response.text:
+        if "Logout" not in login_resp.text and "Sign Out" not in login_resp.text:
             _LOGGER.warning("Atmos Energy login may have failed. Check credentials/site changes.")
 
-        # 3. Navigate to usage page
-        usage_response = session.get(usage_url)
-        usage_response.raise_for_status()
+        usage_resp = session.get(usage_url)
+        usage_resp.raise_for_status()
 
-        soup_usage = BeautifulSoup(usage_response.text, "html.parser")
-
-        # 4. Parse the usage table; adapt selectors to real HTML structure
-        usage_table = soup_usage.find("table", {"class": "usage-table"})
-        if not usage_table:
-            _LOGGER.error("Could not find usage table on the usage page.")
+        soup = BeautifulSoup(usage_resp.text, "html.parser")
+        table = soup.find("table", {"class": "usage-table"})
+        if not table:
+            _LOGGER.error("Could not find usage table in response.")
             return None
 
-        rows = usage_table.find_all("tr")
+        rows = table.find_all("tr")
         if len(rows) < 2:
-            _LOGGER.warning("Usage table has no data rows.")
+            _LOGGER.warning("No data rows found in usage table.")
             return None
 
-        # Assume the first row after the header is the most recent
+        # Example parsing
         latest_row = rows[1]
         cols = latest_row.find_all("td")
         if len(cols) < 3:
@@ -101,7 +127,6 @@ class AtmosEnergyCoordinator(update_coordinator.DataUpdateCoordinator):
         usage_val = cols[1].get_text(strip=True)
         cost_val = cols[2].get_text(strip=True)
 
-        # Return a simple dict
         return {
             "date": date_val,
             "usage": usage_val,
@@ -111,26 +136,41 @@ class AtmosEnergyCoordinator(update_coordinator.DataUpdateCoordinator):
 class AtmosEnergyUsageSensor(SensorEntity):
     """Sensor entity that displays the most recent usage from Atmos Energy."""
 
-    def __init__(self, coordinator: AtmosEnergyCoordinator, entry: ConfigEntry):
-        """Initialize sensor."""
+    def __init__(self, coordinator: AtmosDailyCoordinator, entry: ConfigEntry):
         self.coordinator = coordinator
         self.entry = entry
         self._attr_name = DEFAULT_NAME
         self._attr_unique_id = f"{entry.entry_id}-daily-usage"
+        self._attr_icon = "mdi:gas-cylinder"
+        self._attr_native_unit_of_measurement = "Ccf"  # or "Therms", etc.
+
+    async def async_added_to_hass(self):
+        """
+        Called when the entity is added to Home Assistant.
+        We'll listen for coordinator refreshes (though it's only daily).
+        """
+        await super().async_added_to_hass()
+
+        # We can force an initial update if you want a reading ASAP on first install
+        await self.coordinator.async_request_refresh()
+
+        # Whenever the coordinator updates, we call async_write_ha_state()
+        self.async_on_remove(
+            self.coordinator.hass.bus.async_listen_once(
+                "event_atmos_update", lambda _: self.async_write_ha_state()
+            )
+        )
 
     @property
-    def native_unit_of_measurement(self) -> str | None:
-        """Return the units for usage (Ccf, Therms, etc.)."""
-        return "Ccf"  # Example
+    def native_value(self):
+        """Return the sensor's primary value: the most recent usage."""
+        if not self.coordinator.data:
+            return None
+        return self.coordinator.data.get("usage")
 
     @property
-    def icon(self) -> str:
-        """Return icon."""
-        return "mdi:gas-cylinder"
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        """Return additional attributes such as date and cost."""
+    def extra_state_attributes(self):
+        """Return additional attributes like date and cost."""
         data = self.coordinator.data
         if not data:
             return {}
@@ -140,29 +180,6 @@ class AtmosEnergyUsageSensor(SensorEntity):
         }
 
     @property
-    def native_value(self) -> StateType:
-        """Return the state of the sensor (the most recent usage)."""
-        data = self.coordinator.data
-        if not data:
-            return None
-        return data.get("usage")
-
-    @property
     def should_poll(self) -> bool:
-        """Disable polling. DataUpdateCoordinator will call updates."""
+        """Disable polling. We'll manually fetch once per day at 4 AM."""
         return False
-
-    def update(self):
-        """No-op; updates handled by coordinator."""
-        pass
-
-    async def async_update(self):
-        """No-op; updates handled by coordinator."""
-        pass
-
-    async def async_added_to_hass(self):
-        """When entity is added to hass, register for coordinator updates."""
-        await super().async_added_to_hass()
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self.async_write_ha_state)
-        )
