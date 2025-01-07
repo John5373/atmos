@@ -1,0 +1,29 @@
+{
+  "title": "Atmos Energy",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Atmos Energy",
+        "description": "Enter your Atmos Energy credentials",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "already_configured": "Username is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Atmos Energy Options",
+        "description": "Set optional parameters like scan interval",
+        "data": {
+          "scan_interval": "Update Interval (seconds)"
+        }
+      }
+    }
+  }
+}
