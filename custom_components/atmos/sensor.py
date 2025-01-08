@@ -1,4 +1,4 @@
-"""Atmos Energy Integration: sensor.py (Use _LOGGER.debug for Auth Debug)"""
+"""Atmos Energy Integration: sensor.py (Full File)"""
 
 import logging
 import requests
@@ -32,7 +32,7 @@ def _debug_request(prefix: str, method: str, url: str, **kwargs):
     data = kwargs.get("data")
     if data:
         if isinstance(data, dict):
-            # Mask password if present
+            # Mask the password field if present
             masked_data = dict(data)
             if "password" in masked_data:
                 masked_data["password"] = "********"
@@ -74,12 +74,12 @@ def _get_next_4am():
 
 class AtmosDailyCoordinator:
     """
-    A coordinator that:
-      - Logs in to Atmos
-      - Downloads a CSV (with columns like "Weather Date", "Consumption", etc.)
-      - Tracks daily usage & cumulative usage
-      - Optional once-per-day scheduling at 4 AM
-      - Adds debug logs for each request/response
+    A custom coordinator that:
+      - Logs in to Atmos with debug logs
+      - Checks for HTTP 200 and "Logout"/"Sign Out" in the response to confirm success
+      - Downloads usage CSV and parses it
+      - Maintains daily/cumulative usage
+      - Optionally schedules a 4 AM daily refresh
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
@@ -92,7 +92,7 @@ class AtmosDailyCoordinator:
         self.cumulative_usage = 0.0
 
     def schedule_daily_update(self):
-        """Schedule the next update at 4:00 AM."""
+        """Schedule the next update at 4:00 AM local time."""
         if self._unsub_timer:
             self._unsub_timer()
             self._unsub_timer = None
@@ -111,7 +111,7 @@ class AtmosDailyCoordinator:
         self.schedule_daily_update()
 
     async def async_request_refresh(self):
-        """Asynchronously fetch new data, with debug logging."""
+        """Fetch new data in an executor job, logs debug info, and checks for successful login."""
         try:
             new_data = await self.hass.async_add_executor_job(self._fetch_data)
             if not new_data:
@@ -150,23 +150,26 @@ class AtmosDailyCoordinator:
 
     def _fetch_data(self):
         """
-        1) Logs in to Atmos with debug of all requests/responses
+        1) Logs in to Atmos (checking HTTP 200 + "Logout"/"Sign Out")
         2) Downloads usage CSV
-        3) Parses the CSV -> returns last row as dict
+        3) Parses the CSV -> returns a dict with the last row
         """
         username = self.entry.data.get(CONF_USERNAME)
         password = self.entry.data.get(CONF_PASSWORD)
 
         session = requests.Session()
 
-        # 1) Initial GET to login page
+        # --- 1) Initial GET to login page ---
         login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
         _debug_request("GET login page", "GET", login_url)
         resp_get = session.get(login_url)
         _debug_response("GET login page", resp_get)
         resp_get.raise_for_status()
 
-        # 2) POST credentials
+        # Potentially parse a hidden CSRF token here if needed
+        soup = BeautifulSoup(resp_get.text, "html.parser")
+
+        # --- 2) POST credentials ---
         payload = {
             "username": username,
             "password": password,
@@ -176,10 +179,17 @@ class AtmosDailyCoordinator:
         _debug_response("POST credentials", post_resp)
         post_resp.raise_for_status()
 
-        if "Logout" not in post_resp.text and "Sign Out" not in post_resp.text:
-            _LOGGER.warning("Atmos login may have failed. Check credentials or site changes.")
+        # Confirm 200 + presence of "Logout" or "Sign Out"
+        if post_resp.status_code == 200:
+            _LOGGER.info("Atmos login request returned 200 (OK). Checking response text for success.")
+            if "Logout" in post_resp.text or "Sign Out" in post_resp.text:
+                _LOGGER.debug("Detected 'Logout'/'Sign Out' in response. Login seems successful.")
+            else:
+                _LOGGER.warning("No 'Logout' or 'Sign Out' text found. Login may be incomplete or site changed.")
+        else:
+            _LOGGER.warning("Atmos login returned status %s instead of 200. Login might have failed.", post_resp.status_code)
 
-        # 3) Download CSV
+        # --- 3) Download CSV ---
         now = datetime.datetime.now()
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
         csv_url = (
@@ -191,7 +201,7 @@ class AtmosDailyCoordinator:
         _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
 
-        # 4) Parse CSV
+        # Parse CSV
         csv_file = io.StringIO(csv_resp.text)
         reader = csv.DictReader(csv_file)
         rows = list(reader)
@@ -199,7 +209,7 @@ class AtmosDailyCoordinator:
             _LOGGER.warning("No rows found in the daily usage CSV.")
             return None
 
-        latest_row = rows[-1]
+        latest_row = rows[-1]  # Assume last row is the newest
         return {
             "temp_area": latest_row.get("Temp Area", "").strip(),
             "consumption": latest_row.get("Consumption", "").strip(),
@@ -216,11 +226,12 @@ class AtmosDailyCoordinator:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     """
     Called from __init__.py after the config entry is set up.
-    Creates two sensors + registers a manual fetch service if needed.
+    Creates two sensors + registers the manual fetch service (if not present).
     """
     integration_data = hass.data[DOMAIN][entry.entry_id]
     coordinator: AtmosDailyCoordinator = integration_data["coordinator"]
 
+    # Optionally do an initial refresh
     await coordinator.async_request_refresh()
 
     # Create sensor entities
@@ -230,7 +241,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     ]
     async_add_entities(entities)
 
-    # Register manual fetch service if not present
+    # Register a manual fetch service if not already present
     if not hass.services.has_service(DOMAIN, "fetch_now"):
         async def async_handle_fetch_now(call: ServiceCall):
             _LOGGER.info("Manual fetch_now service called for Atmos Energy.")
@@ -247,7 +258,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 
 class AtmosEnergyDailyUsageSensor(SensorEntity):
-    """Displays the most recent daily usage (Consumption)."""
+    """
+    Shows the most recent daily usage (Consumption).
+    Typically displayed in CCF, ft³, or m³ for gas. 
+    """
 
     def __init__(self, coordinator: AtmosDailyCoordinator, entry: ConfigEntry):
         self.coordinator = coordinator
@@ -255,17 +269,20 @@ class AtmosEnergyDailyUsageSensor(SensorEntity):
         self._attr_name = "Atmos Energy Daily Usage"
         self._attr_unique_id = f"{entry.entry_id}-daily-usage"
         self._attr_icon = "mdi:gas-cylinder"
-        # Use recognized unit for device_class=gas: "CCF", "ft³", or "m³"
+
+        # Must be one of ["CCF", "ft³", "m³"] if device_class = "gas"
         self._attr_native_unit_of_measurement = "CCF"
         self._attr_device_class = "gas"
         self._attr_state_class = "measurement"
 
     @property
     def native_value(self):
+        """Return the daily usage as float."""
         return self.coordinator.current_daily_usage
 
     @property
     def extra_state_attributes(self):
+        """Expose CSV columns as attributes."""
         data = self.coordinator.data
         if not data:
             return {}
@@ -282,11 +299,15 @@ class AtmosEnergyDailyUsageSensor(SensorEntity):
 
     @property
     def should_poll(self):
+        """Disable polling; coordinator handles updates."""
         return False
 
 
 class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
-    """Cumulative usage sensor for the Energy Dashboard."""
+    """
+    A cumulative sensor that sums each day's usage. Perfect for the Energy Dashboard.
+    Stored across restarts via RestoreEntity.
+    """
 
     def __init__(self, coordinator: AtmosDailyCoordinator, entry: ConfigEntry):
         self.coordinator = coordinator
@@ -294,11 +315,14 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
         self._attr_name = "Atmos Energy Cumulative Usage"
         self._attr_unique_id = f"{entry.entry_id}-cumulative-usage"
         self._attr_icon = "mdi:counter"
+
+        # Must be one of ["CCF", "ft³", "m³"] if device_class = "gas"
         self._attr_native_unit_of_measurement = "CCF"
         self._attr_device_class = "gas"
         self._attr_state_class = "total_increasing"
 
     async def async_added_to_hass(self):
+        """Restore the previous cumulative usage."""
         await super().async_added_to_hass()
 
         last_state = await self.async_get_last_state()
@@ -317,6 +341,7 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
 
     @property
     def native_value(self):
+        """Return the total usage so far."""
         return self.coordinator.cumulative_usage
 
     @property
