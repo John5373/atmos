@@ -1,4 +1,4 @@
-"""Atmos Energy Integration: sensor.py (Verbose Debug)"""
+"""Atmos Energy Integration: sensor.py (Use _LOGGER.debug for Auth Debug)"""
 
 import logging
 import requests
@@ -19,21 +19,49 @@ from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD
 
 _LOGGER = logging.getLogger(__name__)
 
-def _debug_response(prefix: str, response: requests.Response):
+
+def _debug_request(prefix: str, method: str, url: str, **kwargs):
     """
-    Helper function to print out verbose debug for a response object:
+    Helper function to log the request details:
+      - Method, URL
+      - Data/Payload (with password masked)
+      - Headers (if provided)
+    """
+    _LOGGER.debug("REQUEST [%s] - Method: %s, URL: %s", prefix, method, url)
+
+    data = kwargs.get("data")
+    if data:
+        if isinstance(data, dict):
+            # Mask password if present
+            masked_data = dict(data)
+            if "password" in masked_data:
+                masked_data["password"] = "********"
+            _LOGGER.debug("REQUEST [%s] - Payload: %s", prefix, masked_data)
+        else:
+            _LOGGER.debug("REQUEST [%s] - Payload (raw): %s", prefix, data)
+
+    headers = kwargs.get("headers")
+    if headers:
+        _LOGGER.debug("REQUEST [%s] - Headers: %s", prefix, headers)
+
+
+def _debug_response(prefix: str, response: requests.Response, max_len=3000):
+    """
+    Helper function to log the response details:
       - URL, status code
       - Headers
-      - Body text (truncated if extremely large)
+      - Body text (truncated if large)
     """
-    print(f"DEBUG ({prefix}) - URL: {response.url}")
-    print(f"DEBUG ({prefix}) - Status Code: {response.status_code}")
-    print(f"DEBUG ({prefix}) - Headers: {response.headers}")
-    if len(response.text) > 3000:
-        # Truncate very large responses to keep logs manageable
-        print(f"DEBUG ({prefix}) - Body (truncated):\n{response.text[:3000]}...[TRUNCATED]...")
+    _LOGGER.debug("RESPONSE [%s] - URL: %s", prefix, response.url)
+    _LOGGER.debug("RESPONSE [%s] - Status Code: %s", prefix, response.status_code)
+    _LOGGER.debug("RESPONSE [%s] - Headers: %s", prefix, response.headers)
+
+    body = response.text
+    if len(body) > max_len:
+        _LOGGER.debug("RESPONSE [%s] - Body (truncated):\n%s...[TRUNCATED]...", prefix, body[:max_len])
     else:
-        print(f"DEBUG ({prefix}) - Body:\n{response.text}")
+        _LOGGER.debug("RESPONSE [%s] - Body:\n%s", prefix, body)
+
 
 def _get_next_4am():
     """Return a datetime for the next occurrence of 4:00 AM local time."""
@@ -43,13 +71,15 @@ def _get_next_4am():
         target += datetime.timedelta(days=1)
     return target
 
+
 class AtmosDailyCoordinator:
     """
-    Coordinator that:
+    A coordinator that:
       - Logs in to Atmos
-      - Downloads a CSV with columns
-      - Tracks daily usage (Consumption) & cumulative usage
-      - Allows once-per-day scheduling at 4 AM
+      - Downloads a CSV (with columns like "Weather Date", "Consumption", etc.)
+      - Tracks daily usage & cumulative usage
+      - Optional once-per-day scheduling at 4 AM
+      - Adds debug logs for each request/response
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
@@ -62,7 +92,7 @@ class AtmosDailyCoordinator:
         self.cumulative_usage = 0.0
 
     def schedule_daily_update(self):
-        """Schedule next update at 4:00 AM."""
+        """Schedule the next update at 4:00 AM."""
         if self._unsub_timer:
             self._unsub_timer()
             self._unsub_timer = None
@@ -81,9 +111,7 @@ class AtmosDailyCoordinator:
         self.schedule_daily_update()
 
     async def async_request_refresh(self):
-        """
-        Fetch new data in an executor job. Logs verbose debug info.
-        """
+        """Asynchronously fetch new data, with debug logging."""
         try:
             new_data = await self.hass.async_add_executor_job(self._fetch_data)
             if not new_data:
@@ -122,18 +150,18 @@ class AtmosDailyCoordinator:
 
     def _fetch_data(self):
         """
-        1) Logs in to Atmos
-        2) Downloads a CSV
-        3) Prints verbose debug for every response
-        4) Parses the CSV -> returns last row as dict
+        1) Logs in to Atmos with debug of all requests/responses
+        2) Downloads usage CSV
+        3) Parses the CSV -> returns last row as dict
         """
         username = self.entry.data.get(CONF_USERNAME)
         password = self.entry.data.get(CONF_PASSWORD)
 
         session = requests.Session()
 
-        # 1) Initial GET (login page)
+        # 1) Initial GET to login page
         login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
+        _debug_request("GET login page", "GET", login_url)
         resp_get = session.get(login_url)
         _debug_response("GET login page", resp_get)
         resp_get.raise_for_status()
@@ -142,8 +170,8 @@ class AtmosDailyCoordinator:
         payload = {
             "username": username,
             "password": password,
-            # If there's a CSRF token, parse and add here
         }
+        _debug_request("POST credentials", "POST", login_url, data=payload)
         post_resp = session.post(login_url, data=payload)
         _debug_response("POST credentials", post_resp)
         post_resp.raise_for_status()
@@ -158,13 +186,14 @@ class AtmosDailyCoordinator:
             "https://www.atmosenergy.com/accountcenter/usagehistory/"
             f"dailyUsageDownload.html?&billingPeriod=Current&{timestamp_str}"
         )
+        _debug_request("GET CSV", "GET", csv_url)
         csv_resp = session.get(csv_url)
         _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
 
+        # 4) Parse CSV
         csv_file = io.StringIO(csv_resp.text)
         reader = csv.DictReader(csv_file)
-
         rows = list(reader)
         if not rows:
             _LOGGER.warning("No rows found in the daily usage CSV.")
@@ -183,24 +212,27 @@ class AtmosDailyCoordinator:
             "billing_period": latest_row.get("Billing Period", "").strip(),
         }
 
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
-    """Sets up sensors + registers a manual fetch service if needed."""
+    """
+    Called from __init__.py after the config entry is set up.
+    Creates two sensors + registers a manual fetch service if needed.
+    """
     integration_data = hass.data[DOMAIN][entry.entry_id]
     coordinator: AtmosDailyCoordinator = integration_data["coordinator"]
 
     await coordinator.async_request_refresh()
 
-    # Create sensors
+    # Create sensor entities
     entities = [
         AtmosEnergyDailyUsageSensor(coordinator, entry),
         AtmosEnergyCumulativeUsageSensor(coordinator, entry),
     ]
     async_add_entities(entities)
 
-    # Register the manual fetch service if you haven't already
+    # Register manual fetch service if not present
     if not hass.services.has_service(DOMAIN, "fetch_now"):
         async def async_handle_fetch_now(call: ServiceCall):
-            """Manual fetch service for all Atmos entries."""
             _LOGGER.info("Manual fetch_now service called for Atmos Energy.")
             for eid, data in hass.data[DOMAIN].items():
                 c: AtmosDailyCoordinator = data["coordinator"]
@@ -213,8 +245,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             service_func=async_handle_fetch_now,
         )
 
+
 class AtmosEnergyDailyUsageSensor(SensorEntity):
-    """Shows the most recent daily usage (Consumption)."""
+    """Displays the most recent daily usage (Consumption)."""
 
     def __init__(self, coordinator: AtmosDailyCoordinator, entry: ConfigEntry):
         self.coordinator = coordinator
@@ -222,7 +255,8 @@ class AtmosEnergyDailyUsageSensor(SensorEntity):
         self._attr_name = "Atmos Energy Daily Usage"
         self._attr_unique_id = f"{entry.entry_id}-daily-usage"
         self._attr_icon = "mdi:gas-cylinder"
-        self._attr_native_unit_of_measurement = "CCF"  # "CCF", "ft³", "m³"
+        # Use recognized unit for device_class=gas: "CCF", "ft³", or "m³"
+        self._attr_native_unit_of_measurement = "CCF"
         self._attr_device_class = "gas"
         self._attr_state_class = "measurement"
 
@@ -250,8 +284,9 @@ class AtmosEnergyDailyUsageSensor(SensorEntity):
     def should_poll(self):
         return False
 
+
 class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
-    """Cumulative usage sensor (total_increasing) for the Energy Dashboard."""
+    """Cumulative usage sensor for the Energy Dashboard."""
 
     def __init__(self, coordinator: AtmosDailyCoordinator, entry: ConfigEntry):
         self.coordinator = coordinator
@@ -259,7 +294,7 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
         self._attr_name = "Atmos Energy Cumulative Usage"
         self._attr_unique_id = f"{entry.entry_id}-cumulative-usage"
         self._attr_icon = "mdi:counter"
-        self._attr_native_unit_of_measurement = "CCF"  # "CCF", "ft³", "m³"
+        self._attr_native_unit_of_measurement = "CCF"
         self._attr_device_class = "gas"
         self._attr_state_class = "total_increasing"
 
