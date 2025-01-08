@@ -45,7 +45,7 @@ def _debug_request(prefix: str, method: str, url: str, **kwargs):
         _LOGGER.debug("REQUEST [%s] - Headers: %s", prefix, headers)
 
 
-def _debug_response(prefix: str, response: requests.Response, max_len=3000):
+def _debug_response(prefix: str, response: requests.Response, max_len=3000000):
     """
     Helper function to log the response details:
       - URL, status code
