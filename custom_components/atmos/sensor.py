@@ -1,4 +1,4 @@
-"""Atmos Energy Integration: sensor.py (Revised CSV Headers)"""
+"""Atmos Energy Integration: sensor.py (With Manual Fetch Service)"""
 
 import logging
 import requests
@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -21,10 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _get_next_4am():
-    """
-    Return a datetime object for the next occurrence of 4:00 AM local time.
-    If you don't want once-per-day scheduling, remove or adjust this logic.
-    """
+    """Return a datetime for the next occurrence of 4:00 AM local time."""
     now = dt_util.now()
     target = now.replace(hour=4, minute=0, second=0, microsecond=0)
     if now >= target:
@@ -34,23 +31,22 @@ def _get_next_4am():
 
 class AtmosDailyCoordinator:
     """
-    A custom coordinator that:
+    A coordinator that:
       - Logs in to Atmos
       - Downloads a CSV with columns:
         ["Temp Area", "Consumption", "Units", "Weather Date", "Avg Temp",
          "High Temp", "Low Temp", "Billing Month", "Billing Period"]
-      - Parses out daily usage from "Consumption"
-      - Treats "Weather Date" as the date for skip-duplicate logic
-      - Tracks daily usage & cumulative usage
+      - Parses out daily usage (Consumption)
+      - Uses "Weather Date" as the skip-duplicate logic
+      - Maintains daily & cumulative usage
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         self.hass = hass
         self.entry = entry
-        self.data = None  # Will hold the most recent row parsed from the CSV
+        self.data = None  # e.g. {"weather_date":..., "consumption":..., etc.}
         self._unsub_timer = None
 
-        # Daily usage from "Consumption" + a running total
         self.current_daily_usage = 0.0
         self.cumulative_usage = 0.0
 
@@ -75,8 +71,7 @@ class AtmosDailyCoordinator:
 
     async def async_request_refresh(self):
         """
-        Fetches new data asynchronously (runs _fetch_data in the executor).
-        Skips updating if we detect the same date as last time.
+        Fetch new data in an executor job. Skip if the date hasn't changed.
         """
         try:
             new_data = await self.hass.async_add_executor_job(self._fetch_data)
@@ -87,7 +82,6 @@ class AtmosDailyCoordinator:
             new_date = new_data.get("weather_date")
             old_date = self.data["weather_date"] if self.data else None
 
-            # Skip if the date is repeated (no new data)
             if old_date and old_date == new_date:
                 _LOGGER.info(
                     "Atmos data not updated (same date: %s). Skipping usage update.",
@@ -95,20 +89,15 @@ class AtmosDailyCoordinator:
                 )
                 return
 
-            # Update the coordinator data
             self.data = new_data
 
-            # Convert Consumption to float for daily usage
             usage_str = new_data.get("consumption", "0").replace(",", "")
             try:
                 usage_float = float(usage_str)
             except ValueError:
                 usage_float = 0.0
 
-            # Update daily usage
             self.current_daily_usage = usage_float
-
-            # Update cumulative
             self.cumulative_usage += usage_float
 
             _LOGGER.debug(
@@ -122,22 +111,9 @@ class AtmosDailyCoordinator:
 
     def _fetch_data(self):
         """
-        1) Logs into Atmos
-        2) Downloads the CSV
-        3) Parses the last row to return a dict with keys:
-           {
-             "weather_date": ...,
-             "consumption": ...,
-             "temp_area": ...,
-             "units": ...,
-             "avg_temp": ...,
-             "high_temp": ...,
-             "low_temp": ...,
-             "billing_month": ...,
-             "billing_period": ...
-           }
+        Log in, download CSV, parse columns, return last row as dict.
+        Adjust as needed for your actual CSV structure.
         """
-
         username = self.entry.data.get(CONF_USERNAME)
         password = self.entry.data.get(CONF_PASSWORD)
 
@@ -154,7 +130,6 @@ class AtmosDailyCoordinator:
         payload = {
             "username": username,
             "password": password,
-            # "csrf_token": ...
         }
 
         post_resp = session.post(login_url, data=payload)
@@ -168,7 +143,7 @@ class AtmosDailyCoordinator:
         if "Logout" not in post_resp.text and "Sign Out" not in post_resp.text:
             _LOGGER.warning("Atmos login may have failed. Check credentials or site changes.")
 
-        # 2. Build CSV download URL with a dynamic timestamp
+        # 2. Build CSV URL with timestamp
         now = datetime.datetime.now()
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
         csv_url = (
@@ -179,7 +154,6 @@ class AtmosDailyCoordinator:
         csv_resp = session.get(csv_url)
         csv_resp.raise_for_status()
 
-        # 3. Parse the CSV in-memory
         csv_file = io.StringIO(csv_resp.text)
         reader = csv.DictReader(csv_file)
 
@@ -188,46 +162,53 @@ class AtmosDailyCoordinator:
             _LOGGER.warning("No rows found in the daily usage CSV.")
             return None
 
-        # Assume the last row is the most recent
         latest_row = rows[-1]
-
-        # Extract each field, or use a default if missing
-        temp_area_val = latest_row.get("Temp Area", "").strip()
-        consumption_val = latest_row.get("Consumption", "").strip()
-        units_val = latest_row.get("Units", "").strip()
-        weather_date_val = latest_row.get("Weather Date", "").strip()
-        avg_temp_val = latest_row.get("Avg Temp", "").strip()
-        high_temp_val = latest_row.get("High Temp", "").strip()
-        low_temp_val = latest_row.get("Low Temp", "").strip()
-        billing_month_val = latest_row.get("Billing Month", "").strip()
-        billing_period_val = latest_row.get("Billing Period", "").strip()
-
         return {
-            "temp_area": temp_area_val,
-            "consumption": consumption_val,
-            "units": units_val,
-            "weather_date": weather_date_val,
-            "avg_temp": avg_temp_val,
-            "high_temp": high_temp_val,
-            "low_temp": low_temp_val,
-            "billing_month": billing_month_val,
-            "billing_period": billing_period_val,
+            "temp_area": latest_row.get("Temp Area", "").strip(),
+            "consumption": latest_row.get("Consumption", "").strip(),
+            "units": latest_row.get("Units", "").strip(),
+            "weather_date": latest_row.get("Weather Date", "").strip(),
+            "avg_temp": latest_row.get("Avg Temp", "").strip(),
+            "high_temp": latest_row.get("High Temp", "").strip(),
+            "low_temp": latest_row.get("Low Temp", "").strip(),
+            "billing_month": latest_row.get("Billing Month", "").strip(),
+            "billing_period": latest_row.get("Billing Period", "").strip(),
         }
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     """
     Called from __init__.py after the config entry is set up.
-    Creates two sensors:
-      - Daily Usage Sensor
-      - Cumulative Usage Sensor
+    Creates two sensors + registers a manual fetch service.
     """
     integration_data = hass.data[DOMAIN][entry.entry_id]
     coordinator: AtmosDailyCoordinator = integration_data["coordinator"]
 
-    # Optionally do an initial refresh on startup
+    # 1) Optionally do an initial fetch on startup
     await coordinator.async_request_refresh()
 
+    # 2) Register a service to manually fetch new data
+    #    We'll call this "fetch_now". If you have multiple entries,
+    #    this service will refresh them all.
+    if not hass.services.has_service(DOMAIN, "fetch_now"):
+        async def async_handle_fetch_now(call: ServiceCall):
+            """Handle the manual 'fetch_now' service call."""
+            _LOGGER.info("Manual fetch_now service called for Atmos Energy.")
+            
+            # Loop over all config entries for this domain
+            for entry_id, data in hass.data[DOMAIN].items():
+                c: AtmosDailyCoordinator = data["coordinator"]
+                await c.async_request_refresh()
+
+            _LOGGER.info("Manual fetch_now service complete for all Atmos entries.")
+
+        hass.services.async_register(
+            domain=DOMAIN,
+            service="fetch_now",
+            service_func=async_handle_fetch_now,
+        )
+
+    # 3) Create sensor entities
     entities = [
         AtmosEnergyDailyUsageSensor(coordinator, entry),
         AtmosEnergyCumulativeUsageSensor(coordinator, entry),
@@ -236,7 +217,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
 
 class AtmosEnergyDailyUsageSensor(SensorEntity):
-    """Shows the most recent daily usage (Consumption)."""
+    """Displays the most recent daily usage from the CSV (Consumption)."""
 
     def __init__(self, coordinator: AtmosDailyCoordinator, entry: ConfigEntry):
         self.coordinator = coordinator
@@ -244,28 +225,21 @@ class AtmosEnergyDailyUsageSensor(SensorEntity):
         self._attr_name = "Atmos Energy Daily Usage"
         self._attr_unique_id = f"{entry.entry_id}-daily-usage"
         self._attr_icon = "mdi:gas-cylinder"
-        self._attr_native_unit_of_measurement = "CCF"  # If "Units" is always Ccf, adjust as needed
-
-        # Typically for Energy usage:
+        # Use an allowed unit for device_class = gas. Could be "CCF", "ft³", or "m³":
+        self._attr_native_unit_of_measurement = "CCF"
         self._attr_device_class = "gas"
-        self._attr_state_class = "total"
+        self._attr_state_class = "measurement"
 
     @property
     def native_value(self):
-        """Returns today's usage as float."""
+        """Return today's usage as float."""
         return self.coordinator.current_daily_usage
 
     @property
     def extra_state_attributes(self):
-        """
-        Expose other columns from the CSV so you can view them in HA:
-         - weather_date, temp_area, units, avg_temp, high_temp, low_temp,
-           billing_month, billing_period
-        """
         data = self.coordinator.data
         if not data:
             return {}
-
         return {
             "weather_date": data.get("weather_date"),
             "temp_area": data.get("temp_area"),
@@ -279,15 +253,14 @@ class AtmosEnergyDailyUsageSensor(SensorEntity):
 
     @property
     def should_poll(self):
-        """Disable polling; coordinator updates the sensor."""
+        """Disable polling. The coordinator updates us."""
         return False
 
 
 class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
     """
-    A cumulative sensor that sums each day's "Consumption".
-    Perfect for the Energy Dashboard (device_class = "gas", state_class = "total_increasing").
-    Restores its value across restarts via RestoreEntity.
+    A cumulative sensor that sums each day's Consumption.
+    Suitable for the Energy Dashboard. Persists across restarts.
     """
 
     def __init__(self, coordinator: AtmosDailyCoordinator, entry: ConfigEntry):
@@ -296,6 +269,7 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
         self._attr_name = "Atmos Energy Cumulative Usage"
         self._attr_unique_id = f"{entry.entry_id}-cumulative-usage"
         self._attr_icon = "mdi:counter"
+        # Use an allowed unit for device_class=gas:
         self._attr_native_unit_of_measurement = "CCF"
         self._attr_device_class = "gas"
         self._attr_state_class = "total_increasing"
@@ -317,12 +291,11 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
 
     @property
     def native_value(self):
-        """Return the cumulative usage so far."""
+        """Return the total usage so far."""
         return self.coordinator.cumulative_usage
 
     @property
     def extra_state_attributes(self):
-        """Optionally expose details from the latest CSV row."""
         data = self.coordinator.data
         if not data:
             return {}
