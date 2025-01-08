@@ -244,7 +244,7 @@ class AtmosEnergyDailyUsageSensor(SensorEntity):
         self._attr_name = "Atmos Energy Daily Usage"
         self._attr_unique_id = f"{entry.entry_id}-daily-usage"
         self._attr_icon = "mdi:gas-cylinder"
-        self._attr_unit_of_measurement = "CCf"  # If "Units" is always Ccf, adjust as needed
+        self._attr_unit_of_measurement = "CCF"  # If "Units" is always Ccf, adjust as needed
 
         # Typically for Energy usage:
         self._attr_device_class = "gas"
@@ -296,7 +296,7 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
         self._attr_name = "Atmos Energy Cumulative Usage"
         self._attr_unique_id = f"{entry.entry_id}-cumulative-usage"
         self._attr_icon = "mdi:counter"
-        self._attr_unit_of_measurement = "Ccf"
+        self._attr_unit_of_measurement = "CCF"
         self._attr_device_class = "gas"
         self._attr_state_class = "total_increasing"
 
