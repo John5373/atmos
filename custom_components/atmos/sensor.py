@@ -1,10 +1,11 @@
-"""Atmos Energy Integration: sensor.py (CSV Parsing Fix)"""
+"""Atmos Energy Integration: sensor.py (Updated for CSV Data)"""
 
 import logging
 import requests
 import csv
 import io
 import datetime
+from urllib.parse import urlencode
 from bs4 import BeautifulSoup
 
 from homeassistant.components.sensor import SensorEntity
@@ -20,41 +21,8 @@ from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD
 _LOGGER = logging.getLogger(__name__)
 
 
-def _debug_request(prefix: str, method: str, url: str, **kwargs):
-    """
-    Helper function to log request details.
-    """
-    _LOGGER.debug("REQUEST [%s] - Method: %s, URL: %s", prefix, method, url)
-    data = kwargs.get("data")
-    if data:
-        if isinstance(data, dict):
-            masked_data = dict(data)
-            if "password" in masked_data:
-                masked_data["password"] = "********"
-            _LOGGER.debug("REQUEST [%s] - Payload: %s", prefix, masked_data)
-        else:
-            _LOGGER.debug("REQUEST [%s] - Payload (raw): %s", prefix, data)
-    headers = kwargs.get("headers")
-    if headers:
-        _LOGGER.debug("REQUEST [%s] - Headers: %s", prefix, headers)
-
-
-def _debug_response(prefix: str, response: requests.Response, max_len=3000):
-    """
-    Helper function to log response details.
-    """
-    _LOGGER.debug("RESPONSE [%s] - URL: %s", prefix, response.url)
-    _LOGGER.debug("RESPONSE [%s] - Status Code: %s", prefix, response.status_code)
-    _LOGGER.debug("RESPONSE [%s] - Headers: %s", prefix, response.headers)
-    body = response.text
-    if len(body) > max_len:
-        _LOGGER.debug("RESPONSE [%s] - Body (truncated):\n%s...[TRUNCATED]...", prefix, body[:max_len])
-    else:
-        _LOGGER.debug("RESPONSE [%s] - Body:\n%s", prefix, body)
-
-
 def _get_next_4am():
-    """Return a datetime for the next occurrence of 4:00 AM local time."""
+    """Return a datetime object for the next occurrence of 4:00 AM local time."""
     now = dt_util.now()
     target = now.replace(hour=4, minute=0, second=0, microsecond=0)
     if now >= target:
@@ -66,10 +34,9 @@ class AtmosDailyCoordinator:
     """
     Coordinator that:
       - Logs in to Atmos
-      - Downloads the CSV with usage data
-      - Parses the CSV to extract the latest row
-      - Tracks daily and cumulative usage
-      - Supports a daily auto-refresh (e.g., at 4 AM)
+      - Downloads a CSV with usage data
+      - Parses and stores daily & cumulative usage
+      - Supports scheduled auto-refresh at 4 AM and manual refresh via service
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
@@ -108,7 +75,7 @@ class AtmosDailyCoordinator:
                 _LOGGER.warning("No data returned from Atmos fetch.")
                 return
 
-            # If the new weather_date is same as before, skip updating to prevent double-counting.
+            # Use the weather_date for duplicate checking
             new_date = new_data.get("weather_date")
             old_date = self.data["weather_date"] if self.data else None
             if old_date and old_date == new_date:
@@ -141,31 +108,35 @@ class AtmosDailyCoordinator:
 
     def _fetch_data(self):
         """
-        Logs in to Atmos, downloads the CSV, and parses the latest row.
-        Returns a dictionary with keys:
-        "weather_date", "consumption", "temp_area", "units", "avg_temp",
-        "high_temp", "low_temp", "billing_month", "billing_period"
+        Logs in to Atmos, downloads the usage CSV, and parses the latest row.
+        Returns a dict with keys:
+          "weather_date", "consumption", "temp_area", "units", "avg_temp",
+          "high_temp", "low_temp", "billing_month", "billing_period"
         """
         username = self.entry.data.get(CONF_USERNAME)
         password = self.entry.data.get(CONF_PASSWORD)
 
         session = requests.Session()
+        # Set a browser-like User-Agent header
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.212 Safari/537.36"
+        })
 
-        # --- Step 1: Login to Atmos ---
+        # --- Step 1: Login ---
         login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
-        _debug_request("GET login page", "GET", login_url)
+        # Do an initial GET to collect cookies/tokens if needed
         resp_get = session.get(login_url)
-        _debug_response("GET login page", resp_get)
         resp_get.raise_for_status()
 
-        # --- Step 2: POST credentials ---
+        # Optionally, parse hidden tokens with BeautifulSoup if required
+        soup = BeautifulSoup(resp_get.text, "html.parser")
+
+        # POST credentials
         payload = {
             "username": username,
             "password": password,
         }
-        _debug_request("POST credentials", "POST", login_url, data=payload)
         post_resp = session.post(login_url, data=payload)
-        _debug_response("POST credentials", post_resp)
         post_resp.raise_for_status()
 
         if post_resp.status_code == 200 and ("Logout" in post_resp.text or "Sign Out" in post_resp.text):
@@ -173,17 +144,24 @@ class AtmosDailyCoordinator:
         else:
             _LOGGER.warning("Atmos login may have failed. Check credentials or site changes.")
 
-        # --- Step 3: Download CSV ---
+        # --- Step 2: Download CSV ---
         now = datetime.datetime.now()
+        # Encode the timestamp properly (colons will be URL-encoded)
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
-        csv_url = ("https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
-                   f"?&billingPeriod=Current&{timestamp_str}")
-        _debug_request("GET CSV", "GET", csv_url)
+        # Build the CSV URL using parameters for proper encoding:
+        base_csv_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
+        # Atmos expects the URL to have billingPeriod=Current and then a timestamp with no key.
+        # We'll include the timestamp as an extra parameter using urlencode.
+        # Since the timestamp parameter has no key, we append it manually after encoding.
+        params = {"billingPeriod": "Current"}
+        csv_url = f"{base_csv_url}?&{urlencode(params)}&{timestamp_str}"
+
         csv_resp = session.get(csv_url)
-        _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
 
-        # --- Step 4: Parse CSV ---
+        _LOGGER.debug("Raw CSV content:\n%s", csv_resp.text)
+
+        # --- Step 3: Parse CSV ---
         csv_file = io.StringIO(csv_resp.text)
         reader = csv.DictReader(csv_file)
         rows = list(reader)
@@ -210,8 +188,8 @@ class AtmosDailyCoordinator:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     """
-    Called from __init__.py after the config entry is set up.
-    Creates the daily and cumulative sensors and registers a manual fetch service.
+    Called from __init__.py after config entry is set up.
+    Creates daily and cumulative sensors and registers the manual fetch service.
     """
     integration_data = hass.data[DOMAIN][entry.entry_id]
     coordinator: AtmosDailyCoordinator = integration_data["coordinator"]
@@ -224,6 +202,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     ]
     async_add_entities(entities)
 
+    # Register manual fetch service if not present
     if not hass.services.has_service(DOMAIN, "fetch_now"):
         async def async_handle_fetch_now(call: ServiceCall):
             _LOGGER.info("Manual fetch_now service called for Atmos Energy.")
@@ -283,6 +262,7 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
+
         last_state = await self.async_get_last_state()
         if last_state and last_state.state is not None:
             try:
