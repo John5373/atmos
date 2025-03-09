@@ -1,4 +1,4 @@
-"""Atmos Energy Integration: sensor.py (with Detailed Debug for Authentication and CSV Fetch)"""
+"""Atmos Energy Integration: sensor.py (Enhanced Debug for CSV Download)"""
 
 import logging
 import requests
@@ -22,12 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _debug_request(prefix: str, method: str, url: str, **kwargs):
-    """
-    Log request details:
-      - Method, URL
-      - Data/Payload (with password masked)
-      - Headers if provided.
-    """
+    """Log request details."""
     _LOGGER.debug("REQUEST [%s] - Method: %s, URL: %s", prefix, method, url)
     data = kwargs.get("data")
     if data:
@@ -44,13 +39,12 @@ def _debug_request(prefix: str, method: str, url: str, **kwargs):
 
 
 def _debug_response(prefix: str, response: requests.Response, max_len=3000):
-    """
-    Log response details:
-      - URL, status code, headers, and body text (truncated if too long)
-    """
+    """Log response details."""
     _LOGGER.debug("RESPONSE [%s] - URL: %s", prefix, response.url)
     _LOGGER.debug("RESPONSE [%s] - Status Code: %s", prefix, response.status_code)
     _LOGGER.debug("RESPONSE [%s] - Headers: %s", prefix, response.headers)
+    content_type = response.headers.get("Content-Type", "")
+    _LOGGER.debug("RESPONSE [%s] - Content-Type: %s", prefix, content_type)
     body = response.text
     if len(body) > max_len:
         _LOGGER.debug("RESPONSE [%s] - Body (truncated):\n%s...[TRUNCATED]...", prefix, body[:max_len])
@@ -72,15 +66,15 @@ class AtmosDailyCoordinator:
     Coordinator that:
       - Authenticates with Atmos
       - Downloads the usage CSV file
-      - Parses and stores the latest usage data
-      - Maintains daily and cumulative usage
-      - Supports scheduled refresh at 4 AM and manual refresh via a service
+      - Parses and stores the latest row
+      - Maintains daily & cumulative usage
+      - Supports scheduled auto-refresh at 4 AM and manual refresh via service
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         self.hass = hass
         self.entry = entry
-        self.data = None  # Parsed row data dictionary
+        self.data = None
         self._unsub_timer = None
 
         self.current_daily_usage = 0.0
@@ -94,10 +88,7 @@ class AtmosDailyCoordinator:
 
         next_time = _get_next_4am()
         _LOGGER.debug("Scheduling next Atmos update at %s", next_time)
-
-        self._unsub_timer = async_track_point_in_time(
-            self.hass, self._scheduled_update_callback, next_time
-        )
+        self._unsub_timer = async_track_point_in_time(self.hass, self._scheduled_update_callback, next_time)
 
     async def _scheduled_update_callback(self, now):
         """Callback at 4 AM to refresh data, then reschedule."""
@@ -121,7 +112,6 @@ class AtmosDailyCoordinator:
 
             self.data = new_data
 
-            # Retrieve and convert the consumption value
             usage_value = new_data.get("consumption")
             if usage_value == "" or usage_value is None:
                 _LOGGER.warning("The 'Consumption' field is empty; defaulting usage to 0.0")
@@ -146,7 +136,7 @@ class AtmosDailyCoordinator:
     def _fetch_data(self):
         """
         Logs in to Atmos, downloads the usage file, and parses the latest row.
-        Returns a dictionary with keys:
+        Returns a dict with keys:
           "weather_date", "consumption", "temp_area", "units", "avg_temp",
           "high_temp", "low_temp", "billing_month", "billing_period"
         """
@@ -154,7 +144,6 @@ class AtmosDailyCoordinator:
         password = self.entry.data.get(CONF_PASSWORD)
 
         session = requests.Session()
-        # Set headers to mimic a real browser
         session.headers.update({
             "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -169,9 +158,8 @@ class AtmosDailyCoordinator:
         _debug_response("GET login page", resp_get)
         resp_get.raise_for_status()
 
-        # Optionally parse hidden tokens with BeautifulSoup if required
+        # Optionally parse hidden tokens here
         soup = BeautifulSoup(resp_get.text, "html.parser")
-        # e.g., token = soup.find("input", {"name": "csrf_token"}) if needed
 
         payload = {"username": username, "password": password}
         _debug_request("POST credentials", "POST", login_url, data=payload)
@@ -183,10 +171,9 @@ class AtmosDailyCoordinator:
             _LOGGER.info("Atmos login successful.")
         else:
             _LOGGER.warning("Atmos login may have failed. Check credentials or site changes.")
-
         _LOGGER.debug("Session cookies after login: %s", session.cookies.get_dict())
 
-        # --- Step 2: Download Usage CSV ---
+        # --- Step 2: Download Usage File ---
         now = datetime.datetime.now()
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
         base_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
@@ -207,7 +194,7 @@ class AtmosDailyCoordinator:
             _LOGGER.warning("No rows found in the CSV file.")
             return None
 
-        latest_row = rows[-1]  # Assume the last row is the most recent
+        latest_row = rows[-1]
         _LOGGER.debug("Parsed CSV last row: %s", latest_row)
 
         return {
@@ -297,7 +284,6 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
-
         last_state = await self.async_get_last_state()
         if last_state and last_state.state is not None:
             try:
