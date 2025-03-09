@@ -1,11 +1,11 @@
-"""Atmos Energy Integration: sensor.py (Enhanced Authentication Debug)"""
+"""Atmos Energy Integration: sensor.py (Enhanced to Mimic Browser Request for CSV)"""
 
 import logging
 import requests
 import csv
 import io
 import datetime
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urljoin
 from bs4 import BeautifulSoup
 
 from homeassistant.components.sensor import SensorEntity
@@ -53,7 +53,7 @@ def _debug_response(prefix: str, response: requests.Response, max_len=3000):
 
 
 def _get_next_4am():
-    """Return a datetime object for the next occurrence of 4:00 AM local time."""
+    """Return a datetime for the next occurrence of 4:00 AM local time."""
     now = dt_util.now()
     target = now.replace(hour=4, minute=0, second=0, microsecond=0)
     if now >= target:
@@ -66,16 +66,16 @@ class AtmosDailyCoordinator:
     Coordinator that:
       - Authenticates with Atmos
       - Downloads the usage CSV file
-      - Checks that the response is not HTML (indicating a login issue)
-      - Parses the CSV to extract the latest row
-      - Maintains daily & cumulative usage
-      - Supports auto-refresh at 4 AM and manual refresh via a service
+      - Validates that the returned file is not HTML
+      - Parses the CSV to extract the latest row of data
+      - Maintains daily and cumulative usage
+      - Supports auto-refresh at 4 AM and manual refresh via service
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         self.hass = hass
         self.entry = entry
-        self.data = None  # Parsed row data dictionary
+        self.data = None  # Dictionary with parsed row data
         self._unsub_timer = None
 
         self.current_daily_usage = 0.0
@@ -103,13 +103,11 @@ class AtmosDailyCoordinator:
             if not new_data:
                 _LOGGER.warning("No data returned from Atmos fetch.")
                 return
-
             new_date = new_data.get("weather_date")
             old_date = self.data.get("weather_date") if self.data else None
             if old_date and old_date == new_date:
                 _LOGGER.info("Atmos data not updated (same date: %s). Skipping usage update.", new_date)
                 return
-
             self.data = new_data
 
             usage_value = new_data.get("consumption")
@@ -135,7 +133,7 @@ class AtmosDailyCoordinator:
     def _fetch_data(self):
         """
         Logs in to Atmos, downloads the usage CSV file, and parses the latest row.
-        Returns a dictionary with keys:
+        Returns a dict with keys:
           "weather_date", "consumption", "temp_area", "units", "avg_temp",
           "high_temp", "low_temp", "billing_month", "billing_period"
         """
@@ -170,9 +168,15 @@ class AtmosDailyCoordinator:
             _LOGGER.warning("Atmos login may have failed. Check credentials or site changes.")
         _LOGGER.debug("Session cookies after login: %s", session.cookies.get_dict())
 
+        # --- Extra: Warm up session by accessing a known authenticated page (optional) ---
+        auth_check_url = "https://www.atmosenergy.com/accountcenter/home"
+        auth_resp = session.get(auth_check_url)
+        _LOGGER.debug("Auth check response status: %s", auth_resp.status_code)
+        _LOGGER.debug("Auth check cookies: %s", session.cookies.get_dict())
+
         # --- Step 2: Download Usage CSV ---
         now = datetime.datetime.now()
-        # Using timestamp with colons as in the URL on the webpage
+        # Use timestamp with colons, matching the URL in the webpage (e.g., "0309202501:30:02")
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
         base_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
         params = {"billingPeriod": "Current"}
@@ -180,14 +184,16 @@ class AtmosDailyCoordinator:
         _debug_request("GET CSV", "GET", csv_url)
         csv_headers = {
             "Referer": "https://www.atmosenergy.com/accountcenter/usagehistory/",
+            "Origin": "https://www.atmosenergy.com",
+            "Accept-Language": "en-US,en;q=0.9",
             "User-Agent": session.headers.get("User-Agent"),
-            "Accept": session.headers.get("Accept")
+            "Accept": session.headers.get("Accept"),
         }
         csv_resp = session.get(csv_url, headers=csv_headers)
         _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
 
-        # Check if response appears to be HTML (indicating an authentication issue)
+        # Check if the response appears to be HTML (indicating an auth error)
         content_type = csv_resp.headers.get("Content-Type", "").lower()
         if "html" in content_type or "<html" in csv_resp.text.lower():
             _LOGGER.error("Expected a file download but received HTML. Response URL: %s", csv_resp.url)
