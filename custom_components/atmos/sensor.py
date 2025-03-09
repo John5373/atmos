@@ -1,4 +1,4 @@
-"""Atmos Energy Integration: sensor.py (Revised to Validate File Download)"""
+"""Atmos Energy Integration: sensor.py (Revised to Use Timestamp with Colons)"""
 
 import logging
 import requests
@@ -65,9 +65,9 @@ class AtmosDailyCoordinator:
     """
     Coordinator that:
       - Authenticates with Atmos
-      - Downloads the usage file
-      - Validates that the file is not HTML (which would indicate a login issue)
-      - Parses the CSV to extract the latest row of data
+      - Downloads the usage file (CSV)
+      - Checks that the response is not HTML (to detect auth issues)
+      - Parses the CSV to extract the latest row
       - Maintains daily & cumulative usage
       - Supports auto-refresh at 4 AM and manual refresh via service
     """
@@ -113,7 +113,6 @@ class AtmosDailyCoordinator:
 
             self.data = new_data
 
-            # Retrieve and convert the consumption value
             usage_value = new_data.get("consumption")
             if usage_value == "" or usage_value is None:
                 _LOGGER.warning("The 'Consumption' field is empty; defaulting usage to 0.0")
@@ -136,8 +135,8 @@ class AtmosDailyCoordinator:
 
     def _fetch_data(self):
         """
-        Logs in to Atmos, downloads the usage file, and parses the latest row.
-        Returns a dict with keys:
+        Logs in to Atmos, downloads the usage CSV file, and parses the latest row.
+        Returns a dictionary with keys:
           "weather_date", "consumption", "temp_area", "units", "avg_temp",
           "high_temp", "low_temp", "billing_month", "billing_period"
         """
@@ -159,9 +158,7 @@ class AtmosDailyCoordinator:
         _debug_response("GET login page", resp_get)
         resp_get.raise_for_status()
 
-        # Optionally parse tokens from the login page if needed
         soup = BeautifulSoup(resp_get.text, "html.parser")
-
         payload = {"username": username, "password": password}
         _debug_request("POST credentials", "POST", login_url, data=payload)
         post_resp = session.post(login_url, data=payload)
@@ -174,21 +171,28 @@ class AtmosDailyCoordinator:
             _LOGGER.warning("Atmos login may have failed. Check credentials or site changes.")
         _LOGGER.debug("Session cookies after login: %s", session.cookies.get_dict())
 
-        # --- Step 2: Download Usage File ---
+        # --- Step 2: Download Usage CSV ---
         now = datetime.datetime.now()
+        # Generate timestamp with colons (e.g., "0309202501:30:02")
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
         base_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
         params = {"billingPeriod": "Current"}
         csv_url = f"{base_url}?&{urlencode(params)}&{timestamp_str}"
         _debug_request("GET CSV", "GET", csv_url)
-        csv_resp = session.get(csv_url)
+        # Mimic browser Referer header
+        csv_headers = {
+            "Referer": "https://www.atmosenergy.com/accountcenter/usagehistory/",
+            "User-Agent": session.headers.get("User-Agent"),
+            "Accept": session.headers.get("Accept")
+        }
+        csv_resp = session.get(csv_url, headers=csv_headers)
         _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
 
-        # Check if the response appears to be HTML instead of a file
+        # Check if response is HTML (indicating auth failure)
         content_type = csv_resp.headers.get("Content-Type", "").lower()
         if "html" in content_type or "<html" in csv_resp.text.lower():
-            _LOGGER.error("Expected a file download but received HTML. Response URL: %s", csv_resp.url)
+            _LOGGER.error("Expected file download but received HTML. Response URL: %s", csv_resp.url)
             return None
 
         _LOGGER.debug("Raw CSV content (length %d): %s", len(csv_resp.text), csv_resp.text)
