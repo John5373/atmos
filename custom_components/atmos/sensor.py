@@ -193,4 +193,95 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     ]
     async_add_entities(entities)
 
-    if not
+    if not hass.services.has_service(DOMAIN, "fetch_now"):
+        async def async_handle_fetch_now(call: ServiceCall):
+            _LOGGER.info("Manual fetch_now service called for Atmos Energy.")
+            for eid, data in hass.data[DOMAIN].items():
+                c: AtmosDailyCoordinator = data["coordinator"]
+                await c.async_request_refresh()
+            _LOGGER.info("Manual fetch_now service complete for all Atmos entries.")
+        hass.services.async_register(DOMAIN, "fetch_now", async_handle_fetch_now)
+
+
+class AtmosEnergyDailyUsageSensor(SensorEntity):
+    """Sensor for the most recent daily usage (Consumption)."""
+
+    def __init__(self, coordinator: AtmosDailyCoordinator, entry: ConfigEntry):
+        self.coordinator = coordinator
+        self.entry = entry
+        self._attr_name = "Atmos Energy Daily Usage"
+        self._attr_native_unit_of_measurement = "CCF"
+        self._attr_device_class = "gas"
+        self._attr_state_class = "measurement"
+
+    @property
+    def native_value(self):
+        return self.coordinator.current_daily_usage
+
+    @property
+    def extra_state_attributes(self):
+        data = self.coordinator.data
+        if not data:
+            return {}
+        return {
+            "weather_date": data.get("weather_date"),
+            "temp_area": data.get("temp_area"),
+            "units": data.get("units"),
+            "avg_temp": data.get("avg_temp"),
+            "high_temp": data.get("high_temp"),
+            "low_temp": data.get("low_temp"),
+            "billing_month": data.get("billing_month"),
+            "billing_period": data.get("billing_period"),
+        }
+
+    @property
+    def should_poll(self):
+        return False
+
+
+class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
+    """Cumulative usage sensor for Atmos Energy (total_increasing)."""
+
+    def __init__(self, coordinator: AtmosDailyCoordinator, entry: ConfigEntry):
+        self.coordinator = coordinator
+        self.entry = entry
+        self._attr_name = "Atmos Energy Cumulative Usage"
+        self._attr_native_unit_of_measurement = "CCF"
+        self._attr_device_class = "gas"
+        self._attr_state_class = "total_increasing"
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state is not None:
+            try:
+                old_val = float(last_state.state)
+                self.coordinator.cumulative_usage = old_val
+                _LOGGER.debug("Restored cumulative usage to %s", old_val)
+            except ValueError:
+                _LOGGER.warning("Could not parse old state '%s' as float", last_state.state)
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self):
+        return self.coordinator.cumulative_usage
+
+    @property
+    def extra_state_attributes(self):
+        data = self.coordinator.data
+        if not data:
+            return {}
+        return {
+            "latest_day": data.get("weather_date"),
+            "temp_area": data.get("temp_area"),
+            "units": data.get("units"),
+            "avg_temp": data.get("avg_temp"),
+            "high_temp": data.get("high_temp"),
+            "low_temp": data.get("low_temp"),
+            "billing_month": data.get("billing_month"),
+            "billing_period": data.get("billing_period"),
+        }
+
+    @property
+    def should_poll(self):
+        return False
