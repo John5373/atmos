@@ -1,4 +1,4 @@
-"""Atmos Energy Integration: sensor.py (Browser-Like CSV Request Headers)"""
+"""Atmos Energy Integration: sensor.py (Handles XLS/CSV Response)"""
 
 import logging
 import requests
@@ -7,6 +7,11 @@ import io
 import datetime
 from urllib.parse import urlencode, quote
 from bs4 import BeautifulSoup
+
+try:
+    import xlrd
+except ImportError:
+    xlrd = None
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
@@ -53,7 +58,7 @@ def _debug_response(prefix: str, response: requests.Response, max_len=3000):
 
 
 def _get_next_4am():
-    """Return a datetime for the next occurrence of 4:00 AM local time."""
+    """Return a datetime object for the next occurrence of 4:00 AM local time."""
     now = dt_util.now()
     target = now.replace(hour=4, minute=0, second=0, microsecond=0)
     if now >= target:
@@ -65,10 +70,10 @@ class AtmosDailyCoordinator:
     """
     Coordinator that:
       - Authenticates with Atmos
-      - Downloads the usage CSV file
-      - Validates that the response is not HTML (indicating an auth error)
-      - Parses the CSV to extract the latest row of data
-      - Maintains daily & cumulative usage
+      - Downloads the usage file (which may be XLS or CSV)
+      - Checks that the returned content is not HTML
+      - Parses the file to extract the latest row
+      - Maintains daily and cumulative usage
       - Supports auto-refresh at 4 AM and manual refresh via service
     """
 
@@ -132,7 +137,7 @@ class AtmosDailyCoordinator:
 
     def _fetch_data(self):
         """
-        Logs in to Atmos, downloads the usage CSV file, and parses the latest row.
+        Logs in to Atmos, downloads the usage file, and parses the latest row.
         Returns a dictionary with keys:
           "weather_date", "consumption", "temp_area", "units", "avg_temp",
           "high_temp", "low_temp", "billing_month", "billing_period"
@@ -145,7 +150,7 @@ class AtmosDailyCoordinator:
             "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
                            "Chrome/133.0.0.0 Safari/537.36"),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+            "Accept": "text/csv,application/vnd.ms-excel,*/*"
         })
 
         # --- Step 1: Login ---
@@ -155,7 +160,6 @@ class AtmosDailyCoordinator:
         _debug_response("GET login page", resp_get)
         resp_get.raise_for_status()
 
-        # Optionally, parse hidden tokens here if required
         soup = BeautifulSoup(resp_get.text, "html.parser")
         payload = {"username": username, "password": password}
         _debug_request("POST credentials", "POST", login_url, data=payload)
@@ -169,20 +173,21 @@ class AtmosDailyCoordinator:
             _LOGGER.warning("Atmos login may have failed. Check credentials or site changes.")
         _LOGGER.debug("Session cookies after login: %s", session.cookies.get_dict())
 
-        # --- Extra: Warm up session by accessing an authenticated page ---
+        # --- Extra: Warm up session by accessing a known authenticated page ---
         auth_check_url = "https://www.atmosenergy.com/accountcenter/home"
         auth_resp = session.get(auth_check_url)
         _LOGGER.debug("Auth check response status: %s", auth_resp.status_code)
         _LOGGER.debug("Auth check cookies: %s", session.cookies.get_dict())
 
-        # --- Step 2: Download Usage CSV ---
+        # --- Step 2: Download Usage File ---
         now = datetime.datetime.now()
-        # Use the timestamp with colons exactly as displayed, e.g., "0309202502:16:13"
+        # Use the timestamp with colons (e.g., "0309202502:16:13")
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
         base_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
         params = {"billingPeriod": "Current"}
-        # The timestamp is appended as a parameter with colons (unencoded) to mimic the browser URL.
-        csv_url = f"{base_url}?&{urlencode(params)}&{timestamp_str}"
+        # URL-encode the timestamp so colons are percent-encoded
+        encoded_timestamp = quote(timestamp_str)
+        csv_url = f"{base_url}?&{urlencode(params)}&{encoded_timestamp}"
         _debug_request("GET CSV", "GET", csv_url)
         csv_headers = {
             "Referer": "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsage.html",
@@ -197,15 +202,12 @@ class AtmosDailyCoordinator:
             "Upgrade-Insecure-Requests": "1",
             "User-Agent": session.headers.get("User-Agent"),
             "Accept": session.headers.get("Accept"),
-            "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"macOS"'
         }
         csv_resp = session.get(csv_url, headers=csv_headers)
         _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
 
-        # Check if response is HTML (which would indicate a problem)
+        # Check Content-Type: Accept both CSV and Excel
         content_type = csv_resp.headers.get("Content-Type", "").lower()
         if "html" in content_type or "<html" in csv_resp.text.lower():
             _LOGGER.error("Expected a file download but received HTML. Response URL: %s", csv_resp.url)
@@ -213,26 +215,48 @@ class AtmosDailyCoordinator:
 
         _LOGGER.debug("Raw CSV content (length %d): %s", len(csv_resp.text), csv_resp.text)
 
-        # --- Step 3: Parse CSV ---
-        csv_file = io.StringIO(csv_resp.text)
-        reader = csv.DictReader(csv_file)
-        rows = list(reader)
-        if not rows:
-            _LOGGER.warning("No rows found in the CSV file.")
-            return None
-        latest_row = rows[-1]
-        _LOGGER.debug("Parsed CSV last row: %s", latest_row)
+        # --- Step 3: Parse File Based on Content-Type ---
+        if "vnd.ms-excel" in content_type:
+            if not xlrd:
+                _LOGGER.error("xlrd module not installed; cannot parse Excel file.")
+                return None
+            try:
+                workbook = xlrd.open_workbook(file_contents=csv_resp.content)
+                sheet = workbook.sheet_by_index(0)
+                if sheet.nrows < 2:
+                    _LOGGER.warning("Not enough rows in the Excel file.")
+                    return None
+                headers = [str(sheet.cell_value(0, col)).strip() for col in range(sheet.ncols)]
+                latest_row_values = [sheet.cell_value(sheet.nrows - 1, col) for col in range(sheet.ncols)]
+                row_dict = {headers[i]: str(latest_row_values[i]).strip() for i in range(len(headers))}
+                _LOGGER.debug("Parsed XLS last row: %s", row_dict)
+                data = row_dict
+            except Exception as e:
+                _LOGGER.error("Error parsing Excel file: %s", e)
+                return None
+        else:
+            # Assume CSV text
+            csv_file = io.StringIO(csv_resp.text)
+            reader = csv.DictReader(csv_file)
+            rows = list(reader)
+            if not rows:
+                _LOGGER.warning("No rows found in the CSV file.")
+                return None
+            latest_row = rows[-1]
+            _LOGGER.debug("Parsed CSV last row: %s", latest_row)
+            # Normalize keys to lowercase
+            data = {k.strip(): v.strip() for k, v in latest_row.items()}
 
         return {
-            "weather_date": latest_row.get("Weather Date", "").strip(),
-            "consumption": latest_row.get("Consumption", "").strip(),
-            "temp_area": latest_row.get("Temp Area", "").strip(),
-            "units": latest_row.get("Units", "").strip(),
-            "avg_temp": latest_row.get("Avg Temp", "").strip(),
-            "high_temp": latest_row.get("High Temp", "").strip(),
-            "low_temp": latest_row.get("Low Temp", "").strip(),
-            "billing_month": latest_row.get("Billing Month", "").strip(),
-            "billing_period": latest_row.get("Billing Period", "").strip(),
+            "weather_date": data.get("Weather Date", ""),
+            "consumption": data.get("Consumption", ""),
+            "temp_area": data.get("Temp Area", ""),
+            "units": data.get("Units", ""),
+            "avg_temp": data.get("Avg Temp", ""),
+            "high_temp": data.get("High Temp", ""),
+            "low_temp": data.get("Low Temp", ""),
+            "billing_month": data.get("Billing Month", ""),
+            "billing_period": data.get("Billing Period", ""),
         }
 
 
