@@ -148,79 +148,71 @@ class AtmosDailyCoordinator:
             _LOGGER.error("Error refreshing Atmos data: %s", err)
             raise UpdateFailed from err
 
-    def _fetch_data(self):
-        """
-        1) Logs in to Atmos (checking HTTP 200 + "Logout"/"Sign Out")
-        2) Downloads usage CSV
-        3) Parses the CSV -> returns a dict with the last row
-        """
-        username = self.entry.data.get(CONF_USERNAME)
-        password = self.entry.data.get(CONF_PASSWORD)
+# --- New
+def _fetch_data(self):
+    """
+    1) Logs in to Atmos
+    2) Downloads the usage CSV
+    3) Parses last row → returns dict
+    """
+    username = self.entry.data.get(CONF_USERNAME)
+    password = self.entry.data.get(CONF_PASSWORD)
 
-        session = requests.Session()
+    session = requests.Session()
 
-        # --- 1) Initial GET to login page ---
-        login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
-        _debug_request("GET login page", "GET", login_url)
-        resp_get = session.get(login_url)
-        _debug_response("GET login page", resp_get)
-        resp_get.raise_for_status()
+    # --- Step 1: Login to Atmos ---
+    login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
+    post_resp = session.post(login_url, data={"username": username, "password": password})
+    post_resp.raise_for_status()
 
-        # Potentially parse a hidden CSRF token here if needed
-        soup = BeautifulSoup(resp_get.text, "html.parser")
+    # --- Step 2: Download CSV ---
+    now = datetime.datetime.now()
+    timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
+    csv_url = (
+        "https://www.atmosenergy.com/accountcenter/usagehistory/"
+        f"dailyUsageDownload.html?&billingPeriod=Current&{timestamp_str}"
+    )
+    csv_resp = session.get(csv_url)
+    csv_resp.raise_for_status()
 
-        # --- 2) POST credentials ---
-        payload = {
-            "username": username,
-            "password": password,
-        }
-        _debug_request("POST credentials", "POST", login_url, data=payload)
-        post_resp = session.post(login_url, data=payload)
-        _debug_response("POST credentials", post_resp)
-        post_resp.raise_for_status()
+    _LOGGER.debug("Raw CSV content:\n%s", csv_resp.text)  # Print full CSV for debugging
 
-        # Confirm 200 + presence of "Logout" or "Sign Out"
-        if post_resp.status_code == 200:
-            _LOGGER.info("Atmos login request returned 200 (OK). Checking response text for success.")
-            if "Logout" in post_resp.text or "Sign Out" in post_resp.text:
-                _LOGGER.debug("Detected 'Logout'/'Sign Out' in response. Login seems successful.")
-            else:
-                _LOGGER.warning("No 'Logout' or 'Sign Out' text found. Login may be incomplete or site changed.")
-        else:
-            _LOGGER.warning("Atmos login returned status %s instead of 200. Login might have failed.", post_resp.status_code)
+    # --- Step 3: Parse CSV ---
+    csv_file = io.StringIO(csv_resp.text)
+    reader = csv.DictReader(csv_file)
+    rows = list(reader)
 
-        # --- 3) Download CSV ---
-        now = datetime.datetime.now()
-        timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
-        csv_url = (
-            "https://www.atmosenergy.com/accountcenter/usagehistory/"
-            f"dailyUsageDownload.html?&billingPeriod=Current&{timestamp_str}"
-        )
-        _debug_request("GET CSV", "GET", csv_url)
-        csv_resp = session.get(csv_url)
-        _debug_response("GET CSV", csv_resp)
-        csv_resp.raise_for_status()
+    if not rows:
+        _LOGGER.warning("No rows found in the CSV file.")
+        return None
 
-        # Parse CSV
-        csv_file = io.StringIO(csv_resp.text)
-        reader = csv.DictReader(csv_file)
-        rows = list(reader)
-        if not rows:
-            _LOGGER.warning("No rows found in the daily usage CSV.")
-            return None
+    latest_row = rows[-1]  # Get the last row (most recent data)
+    _LOGGER.debug("Parsed CSV last row: %s", latest_row)  # Log parsed dictionary
 
-        latest_row = rows[-1]  # Assume last row is the newest
-        return {
-            "temp_area": latest_row.get("Temp Area", "").strip(),
-            "consumption": latest_row.get("Consumption", "").strip(),
-            "units": latest_row.get("Units", "").strip(),
-            "weather_date": latest_row.get("Weather Date", "").strip(),
-            "avg_temp": latest_row.get("Avg Temp", "").strip(),
-            "high_temp": latest_row.get("High Temp", "").strip(),
-            "low_temp": latest_row.get("Low Temp", "").strip(),
-            "billing_month": latest_row.get("Billing Month", "").strip(),
-            "billing_period": latest_row.get("Billing Period", "").strip(),
-        }
+    # --- Step 4: Extract Values Safely ---
+    raw_usage = latest_row.get("Consumption", "").strip()  # Ensure key is correct
+    _LOGGER.debug("Raw Consumption value before processing: %s", raw_usage)
+
+    # Attempt to convert the consumption to float, handle errors
+    try:
+        usage_float = float(raw_usage.replace(",", "").strip())  # Remove commas & convert
+    except ValueError:
+        _LOGGER.warning("Could not convert 'Consumption' value '%s' to float.", raw_usage)
+        usage_float = 0.0
+
+    return {
+        "weather_date": latest_row.get("Weather Date", "").strip(),
+        "consumption": usage_float,  # Ensure it is always a valid float
+        "temp_area": latest_row.get("Temp Area", "").strip(),
+        "units": latest_row.get("Units", "").strip(),
+        "avg_temp": latest_row.get("Avg Temp", "").strip(),
+        "high_temp": latest_row.get("High Temp", "").strip(),
+        "low_temp": latest_row.get("Low Temp", "").strip(),
+        "billing_month": latest_row.get("Billing Month", "").strip(),
+        "billing_period": latest_row.get("Billing Period", "").strip(),
+    }
+    
+
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
