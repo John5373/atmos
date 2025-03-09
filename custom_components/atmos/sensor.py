@@ -1,11 +1,11 @@
-"""Atmos Energy Integration: sensor.py (Enhanced Authentication & CSV Download)"""
+"""Atmos Energy Integration: sensor.py (Timestamp URL-Encoding Update)"""
 
 import logging
 import requests
 import csv
 import io
 import datetime
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from bs4 import BeautifulSoup
 
 from homeassistant.components.sensor import SensorEntity
@@ -66,8 +66,8 @@ class AtmosDailyCoordinator:
     Coordinator that:
       - Authenticates with Atmos
       - Downloads the usage CSV file
-      - Validates that the returned file is not HTML
-      - Parses the CSV to extract the latest row of data
+      - Checks that the returned content is not HTML
+      - Parses the CSV to extract the latest row
       - Maintains daily & cumulative usage
       - Supports auto-refresh at 4 AM and manual refresh via service
     """
@@ -133,7 +133,7 @@ class AtmosDailyCoordinator:
     def _fetch_data(self):
         """
         Logs in to Atmos, downloads the usage CSV file, and parses the latest row.
-        Returns a dictionary with keys:
+        Returns a dict with keys:
           "weather_date", "consumption", "temp_area", "units", "avg_temp",
           "high_temp", "low_temp", "billing_month", "billing_period"
         """
@@ -155,7 +155,6 @@ class AtmosDailyCoordinator:
         _debug_response("GET login page", resp_get)
         resp_get.raise_for_status()
 
-        # Optionally parse hidden tokens here if needed
         soup = BeautifulSoup(resp_get.text, "html.parser")
         payload = {"username": username, "password": password}
         _debug_request("POST credentials", "POST", login_url, data=payload)
@@ -169,7 +168,7 @@ class AtmosDailyCoordinator:
             _LOGGER.warning("Atmos login may have failed. Check credentials or site changes.")
         _LOGGER.debug("Session cookies after login: %s", session.cookies.get_dict())
 
-        # --- Extra: Warm up session by accessing an authenticated page ---
+        # --- Extra: Warm up session by accessing a known authenticated page ---
         auth_check_url = "https://www.atmosenergy.com/accountcenter/home"
         auth_resp = session.get(auth_check_url)
         _LOGGER.debug("Auth check response status: %s", auth_resp.status_code)
@@ -177,13 +176,14 @@ class AtmosDailyCoordinator:
 
         # --- Step 2: Download Usage CSV ---
         now = datetime.datetime.now()
-        # Use the timestamp with colons as displayed on the webpage (e.g., "0309202501:30:02")
+        # Use timestamp with colons, matching the web page (e.g., "0309202501:30:02")
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
         base_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
         params = {"billingPeriod": "Current"}
-        csv_url = f"{base_url}?&{urlencode(params)}&{timestamp_str}"
+        # URL-encode the timestamp so colons are percent-encoded
+        encoded_timestamp = quote(timestamp_str)
+        csv_url = f"{base_url}?&{urlencode(params)}&{encoded_timestamp}"
         _debug_request("GET CSV", "GET", csv_url)
-        # Additional headers to mimic a browser's request:
         csv_headers = {
             "Referer": "https://www.atmosenergy.com/accountcenter/usagehistory/",
             "Origin": "https://www.atmosenergy.com",
@@ -196,7 +196,7 @@ class AtmosDailyCoordinator:
         _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
 
-        # Check if the response is HTML (indicating an authentication issue)
+        # Check if the response appears to be HTML (indicating an authentication issue)
         content_type = csv_resp.headers.get("Content-Type", "").lower()
         if "html" in content_type or "<html" in csv_resp.text.lower():
             _LOGGER.error("Expected a file download but received HTML. Response URL: %s", csv_resp.url)
@@ -211,7 +211,6 @@ class AtmosDailyCoordinator:
         if not rows:
             _LOGGER.warning("No rows found in the CSV file.")
             return None
-
         latest_row = rows[-1]
         _LOGGER.debug("Parsed CSV last row: %s", latest_row)
 
@@ -302,7 +301,6 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
-
         last_state = await self.async_get_last_state()
         if last_state and last_state.state is not None:
             try:
