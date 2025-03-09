@@ -1,4 +1,4 @@
-"""Atmos Energy Integration: sensor.py (Enhanced Debug for CSV Download)"""
+"""Atmos Energy Integration: sensor.py (Revised to Validate File Download)"""
 
 import logging
 import requests
@@ -53,7 +53,7 @@ def _debug_response(prefix: str, response: requests.Response, max_len=3000):
 
 
 def _get_next_4am():
-    """Return a datetime for the next occurrence of 4:00 AM local time."""
+    """Return a datetime object for the next occurrence of 4:00 AM local time."""
     now = dt_util.now()
     target = now.replace(hour=4, minute=0, second=0, microsecond=0)
     if now >= target:
@@ -65,16 +65,17 @@ class AtmosDailyCoordinator:
     """
     Coordinator that:
       - Authenticates with Atmos
-      - Downloads the usage CSV file
-      - Parses and stores the latest row
+      - Downloads the usage file
+      - Validates that the file is not HTML (which would indicate a login issue)
+      - Parses the CSV to extract the latest row of data
       - Maintains daily & cumulative usage
-      - Supports scheduled auto-refresh at 4 AM and manual refresh via service
+      - Supports auto-refresh at 4 AM and manual refresh via service
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         self.hass = hass
         self.entry = entry
-        self.data = None
+        self.data = None  # Parsed row data dictionary
         self._unsub_timer = None
 
         self.current_daily_usage = 0.0
@@ -112,6 +113,7 @@ class AtmosDailyCoordinator:
 
             self.data = new_data
 
+            # Retrieve and convert the consumption value
             usage_value = new_data.get("consumption")
             if usage_value == "" or usage_value is None:
                 _LOGGER.warning("The 'Consumption' field is empty; defaulting usage to 0.0")
@@ -128,7 +130,6 @@ class AtmosDailyCoordinator:
 
             _LOGGER.debug("Fetched new data: date=%s, usage=%s, cumulative=%s",
                           new_data.get("weather_date"), usage_float, self.cumulative_usage)
-
         except Exception as err:
             _LOGGER.error("Error refreshing Atmos data: %s", err)
             raise UpdateFailed from err
@@ -158,7 +159,7 @@ class AtmosDailyCoordinator:
         _debug_response("GET login page", resp_get)
         resp_get.raise_for_status()
 
-        # Optionally parse hidden tokens here
+        # Optionally parse tokens from the login page if needed
         soup = BeautifulSoup(resp_get.text, "html.parser")
 
         payload = {"username": username, "password": password}
@@ -183,6 +184,12 @@ class AtmosDailyCoordinator:
         csv_resp = session.get(csv_url)
         _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
+
+        # Check if the response appears to be HTML instead of a file
+        content_type = csv_resp.headers.get("Content-Type", "").lower()
+        if "html" in content_type or "<html" in csv_resp.text.lower():
+            _LOGGER.error("Expected a file download but received HTML. Response URL: %s", csv_resp.url)
+            return None
 
         _LOGGER.debug("Raw CSV content (length %d): %s", len(csv_resp.text), csv_resp.text)
 
@@ -284,6 +291,7 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
 
     async def async_added_to_hass(self):
         await super().async_added_to_hass()
+
         last_state = await self.async_get_last_state()
         if last_state and last_state.state is not None:
             try:
