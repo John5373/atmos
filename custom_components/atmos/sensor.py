@@ -1,4 +1,4 @@
-"""Atmos Energy Integration: sensor.py (Timestamp URL-Encoding Update)"""
+"""Atmos Energy Integration: sensor.py (Browser-Like CSV Request Headers)"""
 
 import logging
 import requests
@@ -66,8 +66,8 @@ class AtmosDailyCoordinator:
     Coordinator that:
       - Authenticates with Atmos
       - Downloads the usage CSV file
-      - Checks that the returned content is not HTML
-      - Parses the CSV to extract the latest row
+      - Validates that the response is not HTML (indicating an auth error)
+      - Parses the CSV to extract the latest row of data
       - Maintains daily & cumulative usage
       - Supports auto-refresh at 4 AM and manual refresh via service
     """
@@ -133,7 +133,7 @@ class AtmosDailyCoordinator:
     def _fetch_data(self):
         """
         Logs in to Atmos, downloads the usage CSV file, and parses the latest row.
-        Returns a dict with keys:
+        Returns a dictionary with keys:
           "weather_date", "consumption", "temp_area", "units", "avg_temp",
           "high_temp", "low_temp", "billing_month", "billing_period"
         """
@@ -142,10 +142,10 @@ class AtmosDailyCoordinator:
 
         session = requests.Session()
         session.headers.update({
-            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/90.0.4430.212 Safari/537.36"),
-            "Accept": "text/csv,application/csv,application/vnd.ms-excel,*/*"
+                           "Chrome/133.0.0.0 Safari/537.36"),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
         })
 
         # --- Step 1: Login ---
@@ -155,6 +155,7 @@ class AtmosDailyCoordinator:
         _debug_response("GET login page", resp_get)
         resp_get.raise_for_status()
 
+        # Optionally, parse hidden tokens here if required
         soup = BeautifulSoup(resp_get.text, "html.parser")
         payload = {"username": username, "password": password}
         _debug_request("POST credentials", "POST", login_url, data=payload)
@@ -168,7 +169,7 @@ class AtmosDailyCoordinator:
             _LOGGER.warning("Atmos login may have failed. Check credentials or site changes.")
         _LOGGER.debug("Session cookies after login: %s", session.cookies.get_dict())
 
-        # --- Extra: Warm up session by accessing a known authenticated page ---
+        # --- Extra: Warm up session by accessing an authenticated page ---
         auth_check_url = "https://www.atmosenergy.com/accountcenter/home"
         auth_resp = session.get(auth_check_url)
         _LOGGER.debug("Auth check response status: %s", auth_resp.status_code)
@@ -176,27 +177,35 @@ class AtmosDailyCoordinator:
 
         # --- Step 2: Download Usage CSV ---
         now = datetime.datetime.now()
-        # Use timestamp with colons, matching the web page (e.g., "0309202501:30:02")
+        # Use the timestamp with colons exactly as displayed, e.g., "0309202502:16:13"
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
         base_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
         params = {"billingPeriod": "Current"}
-        # URL-encode the timestamp so colons are percent-encoded
-        encoded_timestamp = quote(timestamp_str)
-        csv_url = f"{base_url}?&{urlencode(params)}&{encoded_timestamp}"
+        # The timestamp is appended as a parameter with colons (unencoded) to mimic the browser URL.
+        csv_url = f"{base_url}?&{urlencode(params)}&{timestamp_str}"
         _debug_request("GET CSV", "GET", csv_url)
         csv_headers = {
-            "Referer": "https://www.atmosenergy.com/accountcenter/usagehistory/",
+            "Referer": "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsage.html",
             "Origin": "https://www.atmosenergy.com",
             "Accept-Language": "en-US,en;q=0.9",
-            "X-Requested-With": "XMLHttpRequest",
+            "Connection": "keep-alive",
+            "DNT": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
             "User-Agent": session.headers.get("User-Agent"),
             "Accept": session.headers.get("Accept"),
+            "sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"'
         }
         csv_resp = session.get(csv_url, headers=csv_headers)
         _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
 
-        # Check if the response appears to be HTML (indicating an authentication issue)
+        # Check if response is HTML (which would indicate a problem)
         content_type = csv_resp.headers.get("Content-Type", "").lower()
         if "html" in content_type or "<html" in csv_resp.text.lower():
             _LOGGER.error("Expected a file download but received HTML. Response URL: %s", csv_resp.url)
