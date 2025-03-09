@@ -273,7 +273,7 @@ class AtmosEnergyDailyUsageSensor(SensorEntity):
         # Must be one of ["CCF", "ft³", "m³"] if device_class = "gas"
         self._attr_native_unit_of_measurement = "CCF"
         self._attr_device_class = "gas"
-        self._attr_state_class = "measurement"
+        self._attr_state_class = "total_increasing"
 
     @property
     def native_value(self):
