@@ -1,4 +1,4 @@
-"""Atmos Energy Integration: sensor.py (Revised to Use Timestamp with Colons)"""
+"""Atmos Energy Integration: sensor.py (Enhanced Authentication Debug)"""
 
 import logging
 import requests
@@ -65,11 +65,11 @@ class AtmosDailyCoordinator:
     """
     Coordinator that:
       - Authenticates with Atmos
-      - Downloads the usage file (CSV)
-      - Checks that the response is not HTML (to detect auth issues)
+      - Downloads the usage CSV file
+      - Checks that the response is not HTML (indicating a login issue)
       - Parses the CSV to extract the latest row
       - Maintains daily & cumulative usage
-      - Supports auto-refresh at 4 AM and manual refresh via service
+      - Supports auto-refresh at 4 AM and manual refresh via a service
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
@@ -86,7 +86,6 @@ class AtmosDailyCoordinator:
         if self._unsub_timer:
             self._unsub_timer()
             self._unsub_timer = None
-
         next_time = _get_next_4am()
         _LOGGER.debug("Scheduling next Atmos update at %s", next_time)
         self._unsub_timer = async_track_point_in_time(self.hass, self._scheduled_update_callback, next_time)
@@ -173,13 +172,12 @@ class AtmosDailyCoordinator:
 
         # --- Step 2: Download Usage CSV ---
         now = datetime.datetime.now()
-        # Generate timestamp with colons (e.g., "0309202501:30:02")
+        # Using timestamp with colons as in the URL on the webpage
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
         base_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
         params = {"billingPeriod": "Current"}
         csv_url = f"{base_url}?&{urlencode(params)}&{timestamp_str}"
         _debug_request("GET CSV", "GET", csv_url)
-        # Mimic browser Referer header
         csv_headers = {
             "Referer": "https://www.atmosenergy.com/accountcenter/usagehistory/",
             "User-Agent": session.headers.get("User-Agent"),
@@ -189,10 +187,10 @@ class AtmosDailyCoordinator:
         _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
 
-        # Check if response is HTML (indicating auth failure)
+        # Check if response appears to be HTML (indicating an authentication issue)
         content_type = csv_resp.headers.get("Content-Type", "").lower()
         if "html" in content_type or "<html" in csv_resp.text.lower():
-            _LOGGER.error("Expected file download but received HTML. Response URL: %s", csv_resp.url)
+            _LOGGER.error("Expected a file download but received HTML. Response URL: %s", csv_resp.url)
             return None
 
         _LOGGER.debug("Raw CSV content (length %d): %s", len(csv_resp.text), csv_resp.text)
