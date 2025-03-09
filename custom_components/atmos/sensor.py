@@ -1,4 +1,4 @@
-"""Atmos Energy Integration: sensor.py (Updated to handle CSV/XLS)"""
+"""Atmos Energy Integration: sensor.py (with Detailed Debug for Authentication and CSV Fetch)"""
 
 import logging
 import requests
@@ -21,6 +21,43 @@ from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD
 _LOGGER = logging.getLogger(__name__)
 
 
+def _debug_request(prefix: str, method: str, url: str, **kwargs):
+    """
+    Log request details:
+      - Method, URL
+      - Data/Payload (with password masked)
+      - Headers if provided.
+    """
+    _LOGGER.debug("REQUEST [%s] - Method: %s, URL: %s", prefix, method, url)
+    data = kwargs.get("data")
+    if data:
+        if isinstance(data, dict):
+            masked_data = dict(data)
+            if "password" in masked_data:
+                masked_data["password"] = "********"
+            _LOGGER.debug("REQUEST [%s] - Payload: %s", prefix, masked_data)
+        else:
+            _LOGGER.debug("REQUEST [%s] - Payload (raw): %s", prefix, data)
+    headers = kwargs.get("headers")
+    if headers:
+        _LOGGER.debug("REQUEST [%s] - Headers: %s", prefix, headers)
+
+
+def _debug_response(prefix: str, response: requests.Response, max_len=3000):
+    """
+    Log response details:
+      - URL, status code, headers, and body text (truncated if too long)
+    """
+    _LOGGER.debug("RESPONSE [%s] - URL: %s", prefix, response.url)
+    _LOGGER.debug("RESPONSE [%s] - Status Code: %s", prefix, response.status_code)
+    _LOGGER.debug("RESPONSE [%s] - Headers: %s", prefix, response.headers)
+    body = response.text
+    if len(body) > max_len:
+        _LOGGER.debug("RESPONSE [%s] - Body (truncated):\n%s...[TRUNCATED]...", prefix, body[:max_len])
+    else:
+        _LOGGER.debug("RESPONSE [%s] - Body:\n%s", prefix, body)
+
+
 def _get_next_4am():
     """Return a datetime for the next occurrence of 4:00 AM local time."""
     now = dt_util.now()
@@ -33,17 +70,17 @@ def _get_next_4am():
 class AtmosDailyCoordinator:
     """
     Coordinator that:
-      - Logs in to Atmos
-      - Downloads the usage file
-      - Detects if the file is an XLS (binary) or CSV (text) file
-      - Parses and stores daily & cumulative usage
-      - Supports a daily auto-refresh at 4 AM and manual refresh via service
+      - Authenticates with Atmos
+      - Downloads the usage CSV file
+      - Parses and stores the latest usage data
+      - Maintains daily and cumulative usage
+      - Supports scheduled refresh at 4 AM and manual refresh via a service
     """
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry):
         self.hass = hass
         self.entry = entry
-        self.data = None  # Dictionary with parsed row data
+        self.data = None  # Parsed row data dictionary
         self._unsub_timer = None
 
         self.current_daily_usage = 0.0
@@ -76,7 +113,6 @@ class AtmosDailyCoordinator:
                 _LOGGER.warning("No data returned from Atmos fetch.")
                 return
 
-            # Use the weather_date for duplicate checking
             new_date = new_data.get("weather_date")
             old_date = self.data.get("weather_date") if self.data else None
             if old_date and old_date == new_date:
@@ -85,7 +121,7 @@ class AtmosDailyCoordinator:
 
             self.data = new_data
 
-            # Retrieve consumption as a number
+            # Retrieve and convert the consumption value
             usage_value = new_data.get("consumption")
             if usage_value == "" or usage_value is None:
                 _LOGGER.warning("The 'Consumption' field is empty; defaulting usage to 0.0")
@@ -118,22 +154,29 @@ class AtmosDailyCoordinator:
         password = self.entry.data.get(CONF_PASSWORD)
 
         session = requests.Session()
-        # Set a browser-like User-Agent
+        # Set headers to mimic a real browser
         session.headers.update({
             "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                            "AppleWebKit/537.36 (KHTML, like Gecko) "
-                           "Chrome/90.0.4430.212 Safari/537.36")
+                           "Chrome/90.0.4430.212 Safari/537.36"),
+            "Accept": "text/csv,application/csv,application/vnd.ms-excel,*/*"
         })
 
         # --- Step 1: Login ---
         login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
-        # Initial GET to get cookies
+        _debug_request("GET login page", "GET", login_url)
         resp_get = session.get(login_url)
+        _debug_response("GET login page", resp_get)
         resp_get.raise_for_status()
 
-        # POST credentials (you can parse hidden tokens here if needed)
+        # Optionally parse hidden tokens with BeautifulSoup if required
+        soup = BeautifulSoup(resp_get.text, "html.parser")
+        # e.g., token = soup.find("input", {"name": "csrf_token"}) if needed
+
         payload = {"username": username, "password": password}
+        _debug_request("POST credentials", "POST", login_url, data=payload)
         post_resp = session.post(login_url, data=payload)
+        _debug_response("POST credentials", post_resp)
         post_resp.raise_for_status()
 
         if post_resp.status_code == 200 and ("Logout" in post_resp.text or "Sign Out" in post_resp.text):
@@ -141,61 +184,42 @@ class AtmosDailyCoordinator:
         else:
             _LOGGER.warning("Atmos login may have failed. Check credentials or site changes.")
 
-        # --- Step 2: Download Usage File ---
+        _LOGGER.debug("Session cookies after login: %s", session.cookies.get_dict())
+
+        # --- Step 2: Download Usage CSV ---
         now = datetime.datetime.now()
         timestamp_str = now.strftime("%m%d%Y%H:%M:%S")
         base_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
         params = {"billingPeriod": "Current"}
         csv_url = f"{base_url}?&{urlencode(params)}&{timestamp_str}"
+        _debug_request("GET CSV", "GET", csv_url)
         csv_resp = session.get(csv_url)
+        _debug_response("GET CSV", csv_resp)
         csv_resp.raise_for_status()
 
-        _LOGGER.debug("Downloaded file length: %d bytes", len(csv_resp.content))
+        _LOGGER.debug("Raw CSV content (length %d): %s", len(csv_resp.text), csv_resp.text)
 
-        # --- Step 3: Determine File Format and Parse ---
-        content = csv_resp.content
-        # Check if the file starts with XLS signature (BOF: b'\xd0\xcf\x11\xe0')
-        if content.startswith(b'\xd0\xcf\x11\xe0'):
-            try:
-                import xlrd
-            except ImportError:
-                _LOGGER.error("xlrd module not found. Unable to parse XLS file.")
-                return None
-            workbook = xlrd.open_workbook(file_contents=content)
-            sheet = workbook.sheet_by_index(0)
-            if sheet.nrows < 2:
-                _LOGGER.warning("Not enough rows in XLS file.")
-                return None
-            headers = [str(sheet.cell_value(0, col)).strip().lower() for col in range(sheet.ncols)]
-            latest_row_values = [sheet.cell_value(sheet.nrows - 1, col) for col in range(sheet.ncols)]
-            row_dict = {headers[i]: str(latest_row_values[i]).strip() for i in range(len(headers))}
-            _LOGGER.debug("Parsed XLS last row: %s", row_dict)
-            data = row_dict
-        else:
-            # Assume the file is CSV text
-            csv_text = csv_resp.text
-            _LOGGER.debug("Raw CSV content:\n%s", csv_text)
-            csv_file = io.StringIO(csv_text)
-            reader = csv.DictReader(csv_file)
-            rows = list(reader)
-            if not rows:
-                _LOGGER.warning("No rows found in the CSV file.")
-                return None
-            latest_row = rows[-1]
-            _LOGGER.debug("Parsed CSV last row: %s", latest_row)
-            # Normalize keys to lowercase
-            data = {k.lower(): v.strip() for k, v in latest_row.items()}
+        # --- Step 3: Parse CSV ---
+        csv_file = io.StringIO(csv_resp.text)
+        reader = csv.DictReader(csv_file)
+        rows = list(reader)
+        if not rows:
+            _LOGGER.warning("No rows found in the CSV file.")
+            return None
+
+        latest_row = rows[-1]  # Assume the last row is the most recent
+        _LOGGER.debug("Parsed CSV last row: %s", latest_row)
 
         return {
-            "weather_date": data.get("weather date", ""),
-            "consumption": data.get("consumption", ""),
-            "temp_area": data.get("temp area", ""),
-            "units": data.get("units", ""),
-            "avg_temp": data.get("avg temp", ""),
-            "high_temp": data.get("high temp", ""),
-            "low_temp": data.get("low temp", ""),
-            "billing_month": data.get("billing month", ""),
-            "billing_period": data.get("billing period", ""),
+            "weather_date": latest_row.get("Weather Date", "").strip(),
+            "consumption": latest_row.get("Consumption", "").strip(),
+            "temp_area": latest_row.get("Temp Area", "").strip(),
+            "units": latest_row.get("Units", "").strip(),
+            "avg_temp": latest_row.get("Avg Temp", "").strip(),
+            "high_temp": latest_row.get("High Temp", "").strip(),
+            "low_temp": latest_row.get("Low Temp", "").strip(),
+            "billing_month": latest_row.get("Billing Month", "").strip(),
+            "billing_period": latest_row.get("Billing Period", "").strip(),
         }
 
 
@@ -266,4 +290,44 @@ class AtmosEnergyCumulativeUsageSensor(SensorEntity, RestoreEntity):
     def __init__(self, coordinator: AtmosDailyCoordinator, entry: ConfigEntry):
         self.coordinator = coordinator
         self.entry = entry
-        se
+        self._attr_name = "Atmos Energy Cumulative Usage"
+        self._attr_native_unit_of_measurement = "CCF"
+        self._attr_device_class = "gas"
+        self._attr_state_class = "total_increasing"
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state is not None:
+            try:
+                old_val = float(last_state.state)
+                self.coordinator.cumulative_usage = old_val
+                _LOGGER.debug("Restored cumulative usage to %s", old_val)
+            except ValueError:
+                _LOGGER.warning("Could not parse old state '%s' as float", last_state.state)
+        self.async_write_ha_state()
+
+    @property
+    def native_value(self):
+        return self.coordinator.cumulative_usage
+
+    @property
+    def extra_state_attributes(self):
+        data = self.coordinator.data
+        if not data:
+            return {}
+        return {
+            "latest_day": data.get("weather_date"),
+            "temp_area": data.get("temp_area"),
+            "units": data.get("units"),
+            "avg_temp": data.get("avg_temp"),
+            "high_temp": data.get("high_temp"),
+            "low_temp": data.get("low_temp"),
+            "billing_month": data.get("billing_month"),
+            "billing_period": data.get("billing_period"),
+        }
+
+    @property
+    def should_poll(self):
+        return False
