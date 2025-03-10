@@ -30,8 +30,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class AtmosEnergyLatestSensor(Entity):
     """Sensor showing the most recent consumption data with weather info as attributes."""
 
-    # Enable polling (update() will be called by Home Assistant every SCAN_INTERVAL)
-    _attr_should_poll = True
+    _attr_should_poll = True  # Use HA's polling (every SCAN_INTERVAL)
 
     def __init__(self, username, password):
         """Initialize the Latest Consumption sensor."""
@@ -40,6 +39,11 @@ class AtmosEnergyLatestSensor(Entity):
         self._state = None
         self._attributes = {}
         self._name = "AtmosEnergy Latest Consumption"
+
+    @property
+    def unique_id(self):
+        """Return a unique ID for this sensor."""
+        return f"{DOMAIN}_latest_{self._username}"
 
     @property
     def name(self):
@@ -183,6 +187,11 @@ class AtmosEnergyCumulativeSensor(Entity):
         self._state = None
         self._attributes = {}
         self._name = "AtmosEnergy Cumulative Consumption"
+
+    @property
+    def unique_id(self):
+        """Return a unique ID for this sensor."""
+        return f"{DOMAIN}_cumulative_{self._username}"
 
     @property
     def name(self):
