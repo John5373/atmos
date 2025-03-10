@@ -5,7 +5,9 @@
   "documentation": "https://github.com/john5373/atmosenergy",
   "requirements": [
     "requests>=2.0.0",
-    "beautifulsoup4>=4.0.0"
+    "beautifulsoup4>=4.0.0",
+    "pandas",
+    "xlrd"
   ],
   "codeowners": ["@your_github_username"],
   "config_flow": true
