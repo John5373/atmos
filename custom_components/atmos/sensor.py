@@ -11,8 +11,9 @@ from bs4 import BeautifulSoup
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from homeassistant.helpers.entity import Entity
 
+from custom_components.atmosenergy import SENSORS, DOMAIN
+
 _LOGGER = logging.getLogger(__name__)
-DOMAIN = "atmosenergy"
 
 # Set the default scan interval to 12 hours.
 SCAN_INTERVAL = timedelta(hours=12)
@@ -30,7 +31,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class AtmosEnergyLatestSensor(Entity):
     """Sensor showing the most recent daily consumption and weather info as attributes."""
 
-    _attr_should_poll = True  # Enable polling (every SCAN_INTERVAL)
+    _attr_should_poll = True  # Use HA polling (every SCAN_INTERVAL)
 
     def __init__(self, username, password):
         """Initialize the Latest Consumption sensor."""
@@ -57,7 +58,7 @@ class AtmosEnergyLatestSensor(Entity):
 
     @property
     def extra_state_attributes(self):
-        """Return sensor attributes (weather data, last update)."""
+        """Return sensor attributes."""
         return self._attributes
 
     @property
@@ -74,6 +75,15 @@ class AtmosEnergyLatestSensor(Entity):
     def unit_of_measurement(self):
         """Return the unit of measurement."""
         return "CCF"
+
+    async def async_added_to_hass(self):
+        """When entity is added, register it in the global sensor list."""
+        SENSORS.append(self)
+
+    async def async_will_remove_from_hass(self):
+        """When entity is removed, remove it from the global sensor list."""
+        if self in SENSORS:
+            SENSORS.remove(self)
 
     def update(self):
         """Fetch the latest consumption data and weather info from the Excel file."""
@@ -150,7 +160,6 @@ class AtmosEnergyLatestSensor(Entity):
                 self._state = None
                 return
 
-            # Use the last row (most recent record) as the latest data.
             latest_record = df.iloc[-1]
             try:
                 consumption_value = float(latest_record["Consumption"])
@@ -226,6 +235,15 @@ class AtmosEnergyCumulativeSensor(Entity):
         """Return the unit of measurement."""
         return "CCF"
 
+    async def async_added_to_hass(self):
+        """Register sensor in global sensor list."""
+        SENSORS.append(self)
+
+    async def async_will_remove_from_hass(self):
+        """Remove sensor from global sensor list."""
+        if self in SENSORS:
+            SENSORS.remove(self)
+
     def update(self):
         """Fetch and compute cumulative consumption data from the Excel file."""
         try:
@@ -297,7 +315,12 @@ class AtmosEnergyCumulativeSensor(Entity):
                 self._state = None
                 return
             cumulative = df["Consumption"].sum()
-            self._state = float(cumulative)
+            try:
+                self._state = float(cumulative)
+            except (ValueError, TypeError) as err:
+                _LOGGER.error("Cumulative consumption is not numeric: %s", err)
+                self._state = None
+                return
             self._attributes["last_updated"] = datetime.datetime.now().isoformat()
             self._attributes["number_of_days"] = len(df)
             _LOGGER.debug("Updated Cumulative sensor state with consumption: %s", cumulative)
