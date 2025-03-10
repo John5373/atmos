@@ -94,7 +94,7 @@ session = requests.Session()
             "logout" in auth_resp.text.lower() or "account center" in auth_resp.text.lower()
         ):
             return True
-#        return False
-#    except Exception as e:
-#        _LOGGER.exception("Error validating credentials: %s", e)
-#        return False
+        return False
+    except Exception as e:
+        _LOGGER.exception("Error validating credentials: %s", e)
+        return False
