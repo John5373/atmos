@@ -16,6 +16,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Set up AtmosEnergy from a config entry."""
+    # Use the new async_forward_entry_setups and await its result.
     await hass.config_entries.async_forward_entry_setups(config_entry, ["sensor"])
     return True
 
