@@ -11,19 +11,17 @@ DOMAIN = "atmosenergy"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the AtmosEnergy component from YAML configuration if needed."""
+    # Since we're using config entries via config_flow, simply return True.
     return True
 
 async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Set up AtmosEnergy from a config entry."""
-    hass.async_create_task(
-        hass.config_entries.async_forward_entry_setup(config_entry, "sensor")
-    )
+    await hass.config_entries.async_forward_entry_setups(config_entry, ["sensor"])
     return True
 
 async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
     """Unload an AtmosEnergy config entry."""
-    unload_ok = await hass.config_entries.async_forward_entry_unload(config_entry, "sensor")
-    return unload_ok
+    return await hass.config_entries.async_unload_platforms(config_entry, ["sensor"])
 
 def validate_credentials(username, password):
     """Validate credentials by attempting to log in to AtmosEnergy."""
