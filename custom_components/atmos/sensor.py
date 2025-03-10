@@ -30,7 +30,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class AtmosEnergyLatestSensor(Entity):
     """Sensor showing the most recent consumption data with weather info as attributes."""
 
-    _attr_should_poll = True  # Use HA's polling (every SCAN_INTERVAL)
+    _attr_should_poll = True  # Enable polling with the default SCAN_INTERVAL
 
     def __init__(self, username, password):
         """Initialize the Latest Consumption sensor."""
