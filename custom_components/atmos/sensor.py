@@ -85,9 +85,8 @@ class AtmosEnergyLatestSensor(Entity):
             login_page_url = "https://www.atmosenergy.com/accountcenter/logon/login.html"
             login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
             timestamp = datetime.datetime.now().strftime("%d%m%Y%H:%M:%S")
-            data_download_url = (
-                "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html?&billingPeriod=Current&{timestamp}"
-            )
+            data_download_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html?&billingPeriod=Current&{timestamp}"
+            
             headers = {
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
                 "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -239,10 +238,7 @@ class AtmosEnergyCumulativeSensor(Entity):
             login_page_url = "https://www.atmosenergy.com/accountcenter/logon/login.html"
             login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
             timestamp = datetime.datetime.now().strftime("%d%m%Y%H:%M:%S")
-            data_download_url = (
-                "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
-                f"?&billingPeriod=Current&{timestamp}"
-            )
+            data_download_url = "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html?&billingPeriod=Current&{timestamp}"
             headers = {
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
                 "Accept-Encoding": "gzip, deflate, br, zstd",
