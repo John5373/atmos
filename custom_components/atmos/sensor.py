@@ -2,6 +2,7 @@
 import io
 import datetime
 import logging
+from datetime import timedelta
 
 import pandas as pd
 import requests
@@ -10,11 +11,11 @@ from bs4 import BeautifulSoup
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from homeassistant.helpers.entity import Entity
 
-# Import the global sensor list from our integration.
-from custom_components.atmosenergy import SENSORS
-
 _LOGGER = logging.getLogger(__name__)
 DOMAIN = "atmosenergy"
+
+# Set the default scan interval to 12 hours.
+SCAN_INTERVAL = timedelta(hours=12)
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up AtmosEnergy sensors from a config entry."""
@@ -28,7 +29,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
 class AtmosEnergyLatestSensor(Entity):
     """Sensor showing the most recent consumption data with weather info as attributes."""
-    _attr_should_poll = False  # Disable polling; we update via schedule or service
+
+    # Enable polling (update() will be called by Home Assistant every SCAN_INTERVAL)
+    _attr_should_poll = True
 
     def __init__(self, username, password):
         """Initialize the Latest Consumption sensor."""
@@ -37,15 +40,6 @@ class AtmosEnergyLatestSensor(Entity):
         self._state = None
         self._attributes = {}
         self._name = "AtmosEnergy Latest Consumption"
-
-    async def async_added_to_hass(self):
-        """When entity is added, register it in the global list."""
-        SENSORS.append(self)
-
-    async def async_will_remove_from_hass(self):
-        """When entity is removed, remove it from the global list."""
-        if self in SENSORS:
-            SENSORS.remove(self)
 
     @property
     def name(self):
@@ -159,6 +153,7 @@ class AtmosEnergyLatestSensor(Entity):
             latest_record = df.iloc[-1]
             consumption_value = latest_record["Consumption"]
             self._state = consumption_value
+
             attributes = {}
             if "Weather Date" in df.columns:
                 attributes["weather date"] = latest_record["Weather Date"]
@@ -170,6 +165,7 @@ class AtmosEnergyLatestSensor(Entity):
                 attributes["Low Temp"] = latest_record["Low Temp"]
             attributes["last_updated"] = datetime.datetime.now().isoformat()
             self._attributes = attributes
+
             _LOGGER.debug("Updated Latest sensor state with consumption: %s", consumption_value)
         except Exception as e:
             _LOGGER.exception("Error updating AtmosEnergy Latest sensor: %s", e)
@@ -177,7 +173,8 @@ class AtmosEnergyLatestSensor(Entity):
 
 class AtmosEnergyCumulativeSensor(Entity):
     """Sensor showing the cumulative consumption (sum of all days)."""
-    _attr_should_poll = False
+
+    _attr_should_poll = True
 
     def __init__(self, username, password):
         """Initialize the Cumulative Consumption sensor."""
@@ -186,15 +183,6 @@ class AtmosEnergyCumulativeSensor(Entity):
         self._state = None
         self._attributes = {}
         self._name = "AtmosEnergy Cumulative Consumption"
-
-    async def async_added_to_hass(self):
-        """When entity is added, register it in the global list."""
-        SENSORS.append(self)
-
-    async def async_will_remove_from_hass(self):
-        """When entity is removed, remove it from the global list."""
-        if self in SENSORS:
-            SENSORS.remove(self)
 
     @property
     def name(self):
