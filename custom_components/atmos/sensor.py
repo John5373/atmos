@@ -11,11 +11,9 @@ from bs4 import BeautifulSoup
 from homeassistant.const import CONF_USERNAME, CONF_PASSWORD
 from homeassistant.helpers.entity import Entity
 
-from custom_components.atmosenergy import SENSORS, DOMAIN
-
 _LOGGER = logging.getLogger(__name__)
+DOMAIN = "atmosenergy"
 
-# Set the default scan interval to 12 hours.
 SCAN_INTERVAL = timedelta(hours=12)
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -23,18 +21,19 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     username = config_entry.data.get(CONF_USERNAME)
     password = config_entry.data.get(CONF_PASSWORD)
     entities = [
-        AtmosEnergyLatestSensor(username, password),
-        AtmosEnergyCumulativeSensor(username, password)
+        AtmosEnergyLatestSensor(hass, username, password),
+        AtmosEnergyCumulativeSensor(hass, username, password)
     ]
     async_add_entities(entities, True)
 
 class AtmosEnergyLatestSensor(Entity):
     """Sensor showing the most recent daily consumption and weather info as attributes."""
 
-    _attr_should_poll = True  # Use HA polling (every SCAN_INTERVAL)
+    _attr_should_poll = True
 
-    def __init__(self, username, password):
+    def __init__(self, hass, username, password):
         """Initialize the Latest Consumption sensor."""
+        self.hass = hass
         self._username = username
         self._password = password
         self._state = None
@@ -76,17 +75,12 @@ class AtmosEnergyLatestSensor(Entity):
         """Return the unit of measurement."""
         return "CCF"
 
-    async def async_added_to_hass(self):
-        """When entity is added, register it in the global sensor list."""
-        SENSORS.append(self)
+    async def async_update(self):
+        """Asynchronous update: run blocking update code in executor."""
+        await self.hass.async_add_executor_job(self._update_sync)
 
-    async def async_will_remove_from_hass(self):
-        """When entity is removed, remove it from the global sensor list."""
-        if self in SENSORS:
-            SENSORS.remove(self)
-
-    def update(self):
-        """Fetch the latest consumption data and weather info from the Excel file."""
+    def _update_sync(self):
+        """Synchronous update method (runs in executor)."""
         try:
             login_page_url = "https://www.atmosenergy.com/accountcenter/logon/login.html"
             login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
@@ -192,8 +186,9 @@ class AtmosEnergyCumulativeSensor(Entity):
 
     _attr_should_poll = True
 
-    def __init__(self, username, password):
+    def __init__(self, hass, username, password):
         """Initialize the Cumulative Consumption sensor."""
+        self.hass = hass
         self._username = username
         self._password = password
         self._state = None
@@ -235,17 +230,12 @@ class AtmosEnergyCumulativeSensor(Entity):
         """Return the unit of measurement."""
         return "CCF"
 
-    async def async_added_to_hass(self):
-        """Register sensor in global sensor list."""
-        SENSORS.append(self)
+    async def async_update(self):
+        """Asynchronous update: run blocking cumulative update in executor."""
+        await self.hass.async_add_executor_job(self._update_sync)
 
-    async def async_will_remove_from_hass(self):
-        """Remove sensor from global sensor list."""
-        if self in SENSORS:
-            SENSORS.remove(self)
-
-    def update(self):
-        """Fetch and compute cumulative consumption data from the Excel file."""
+    def _update_sync(self):
+        """Synchronous update method for cumulative sensor."""
         try:
             login_page_url = "https://www.atmosenergy.com/accountcenter/logon/login.html"
             login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
