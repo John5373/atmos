@@ -28,9 +28,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     async_add_entities(entities, True)
 
 class AtmosEnergyLatestSensor(Entity):
-    """Sensor showing the most recent consumption data with weather info as attributes."""
+    """Sensor showing the most recent daily consumption and weather info as attributes."""
 
-    _attr_should_poll = True  # Enable polling with the default SCAN_INTERVAL
+    _attr_should_poll = True  # Enable polling (every SCAN_INTERVAL)
 
     def __init__(self, username, password):
         """Initialize the Latest Consumption sensor."""
@@ -52,12 +52,12 @@ class AtmosEnergyLatestSensor(Entity):
 
     @property
     def state(self):
-        """Return the sensor's state (latest consumption)."""
+        """Return the sensor's state (latest consumption as a number)."""
         return self._state
 
     @property
     def extra_state_attributes(self):
-        """Return sensor attributes."""
+        """Return sensor attributes (weather data, last update)."""
         return self._attributes
 
     @property
@@ -80,7 +80,6 @@ class AtmosEnergyLatestSensor(Entity):
         try:
             login_page_url = "https://www.atmosenergy.com/accountcenter/logon/login.html"
             login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
-            # Create a dynamic timestamp (format: ddMMyyyyHH:MM:SS)
             timestamp = datetime.datetime.now().strftime("%d%m%Y%H:%M:%S")
             data_download_url = (
                 "https://www.atmosenergy.com/accountcenter/usagehistory/dailyUsageDownload.html"
@@ -112,7 +111,6 @@ class AtmosEnergyLatestSensor(Entity):
                 "sec-ch-ua-platform": "macOS"
             }
             session = requests.Session()
-            # Retrieve cookies and the hidden formId.
             resp = session.get(login_page_url, headers=headers)
             soup = BeautifulSoup(resp.content, "html.parser")
             form_id_element = soup.find("input", {"name": "formId"})
@@ -128,7 +126,6 @@ class AtmosEnergyLatestSensor(Entity):
                 self._state = None
                 return
 
-            # Download the Excel file.
             xls_resp = session.get(data_download_url, headers=headers)
             if xls_resp.status_code != 200:
                 _LOGGER.error("Failed to download XLS data. Status code: %s", xls_resp.status_code)
@@ -155,7 +152,13 @@ class AtmosEnergyLatestSensor(Entity):
 
             # Use the last row (most recent record) as the latest data.
             latest_record = df.iloc[-1]
-            consumption_value = latest_record["Consumption"]
+            try:
+                consumption_value = float(latest_record["Consumption"])
+            except (ValueError, TypeError) as err:
+                _LOGGER.error("Consumption value is not numeric: %s", err)
+                self._state = None
+                return
+
             self._state = consumption_value
 
             attributes = {}
@@ -200,7 +203,7 @@ class AtmosEnergyCumulativeSensor(Entity):
 
     @property
     def state(self):
-        """Return the sensor's state (cumulative consumption)."""
+        """Return the sensor's state (cumulative consumption as a number)."""
         return self._state
 
     @property
@@ -294,7 +297,7 @@ class AtmosEnergyCumulativeSensor(Entity):
                 self._state = None
                 return
             cumulative = df["Consumption"].sum()
-            self._state = cumulative
+            self._state = float(cumulative)
             self._attributes["last_updated"] = datetime.datetime.now().isoformat()
             self._attributes["number_of_days"] = len(df)
             _LOGGER.debug("Updated Cumulative sensor state with consumption: %s", cumulative)
