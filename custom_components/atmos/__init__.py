@@ -7,7 +7,6 @@ from homeassistant.config_entries import ConfigEntry
 _LOGGER = logging.getLogger(__name__)
 DOMAIN = "atmosenergy"
 
-# Global list for sensor entities to allow manual updates.
 SENSORS = []
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
