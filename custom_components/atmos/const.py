@@ -1,4 +1,4 @@
-DOMAIN = "atmos_energy"
+DOMAIN = "atmosenergy"
 
 DEFAULT_NAME = "Atmos Energy Usage"
 DEFAULT_SCAN_INTERVAL = 3600  # seconds, i.e. 1 hour
