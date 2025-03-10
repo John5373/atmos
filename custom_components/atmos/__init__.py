@@ -1,48 +1,60 @@
-"""Atmos Energy Integration: __init__.py"""
+"""The AtmosEnergy integration."""
 import logging
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
-
-from .const import DOMAIN
-from .sensor import AtmosDailyCoordinator
+import requests
+from bs4 import BeautifulSoup
 
 _LOGGER = logging.getLogger(__name__)
+DOMAIN = "atmosenergy"
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """
-    Set up Atmos Energy from a config entry.
-    This is called at Home Assistant startup for each entry.
-    """
-    hass.data.setdefault(DOMAIN, {})
-    
-    # Create your daily coordinator (adjust if you have a different coordinator class)
-    coordinator = AtmosDailyCoordinator(hass, entry)
-    
-    # Store it so you can unload it later
-    hass.data[DOMAIN][entry.entry_id] = {"coordinator": coordinator}
-    
-    # Now forward the entry to the sensor platform using the recommended method
-    await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
-    
-    # Schedule the first daily update if you're doing once-per-day logic
-    coordinator.schedule_daily_update()
+def validate_credentials(username, password):
+    """Validate credentials by attempting to log in to AtmosEnergy."""
+    try:
+        login_page_url = "https://www.atmosenergy.com/accountcenter/logon/login.html"
+        login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "DNT": "1",
+            "Host": "www.atmosenergy.com",
+            "Origin": "https://www.atmosenergy.com",
+            "Pragma": "no-cache",
+            "Referer": "https://www.atmosenergy.com/accountcenter/logon/login.html",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+            "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"),
+            "sec-ch-ua": "\"Not(A:Brand\";v=\"99\", \"Google Chrome\";v=\"133\", \"Chromium\";v=\"133\"",
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": "macOS"
+        }
 
-    return True
+        session = requests.Session()
+        resp = session.get(login_page_url, headers=headers)
+        if resp.status_code != 200:
+            _LOGGER.error("Error fetching login page: %s", resp.status_code)
+            return False
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    integration_data = hass.data[DOMAIN].get(entry.entry_id)
-    coordinator = integration_data.get("coordinator") if integration_data else None
-    
-    # Cancel daily timer if needed
-    if coordinator and coordinator._unsub_timer:
-        coordinator._unsub_timer()
-        coordinator._unsub_timer = None
-
-    # Unload the sensor platform
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, ["sensor"])
-    
-    if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
-    
-    return unload_ok
+        soup = BeautifulSoup(resp.content, "html.parser")
+        form_id_element = soup.find("input", {"name": "formId"})
+        form_id = form_id_element.get("value") if form_id_element else ""
+        payload = {
+            "username": username,
+            "password": password,
+            "formId": form_id
+        }
+        auth_resp = session.post(login_url, data=payload, headers=headers)
+        if auth_resp.status_code in (200, 304) and (
+            "logout" in auth_resp.text.lower() or "account center" in auth_resp.text.lower()
+        ):
+            return True
+        return False
+    except Exception as e:
+        _LOGGER.exception("Error validating credentials: %s", e)
+        return False
