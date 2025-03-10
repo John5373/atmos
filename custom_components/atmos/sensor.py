@@ -100,7 +100,14 @@ class AtmosEnergySensor(Entity):
                 self._state = None
                 return
 
-            csv_text = csv_resp.content.decode("utf-8")
+            # Try decoding CSV with UTF-8, fallback to latin1 if that fails.
+            try:
+                csv_text = csv_resp.content.decode("utf-8")
+            except UnicodeDecodeError:
+                _LOGGER.warning("UTF-8 decode failed, trying latin1 encoding")
+                csv_text = csv_resp.content.decode("latin1")
+            
+            import csv  # Ensure csv is imported
             csv_reader = csv.reader(csv_text.splitlines())
             rows = list(csv_reader)
 
