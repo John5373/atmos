@@ -1,8 +1,9 @@
 """Sensor platform for AtmosEnergy."""
-import csv
+import io
 import datetime
 import logging
 
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
@@ -49,7 +50,7 @@ class AtmosEnergyLatestSensor(Entity):
         return self._attributes
 
     def update(self):
-        """Fetch the latest consumption data and weather information."""
+        """Fetch the latest consumption data and weather information from the Excel file."""
         try:
             login_page_url = "https://www.atmosenergy.com/accountcenter/logon/login.html"
             login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
@@ -86,7 +87,7 @@ class AtmosEnergyLatestSensor(Entity):
             }
 
             session = requests.Session()
-            # Step 1: Retrieve cookies and the hidden formId.
+            # Retrieve cookies and hidden formId.
             resp = session.get(login_page_url, headers=headers)
             soup = BeautifulSoup(resp.content, "html.parser")
             form_id_element = soup.find("input", {"name": "formId"})
@@ -102,55 +103,49 @@ class AtmosEnergyLatestSensor(Entity):
                 self._state = None
                 return
 
-            # Step 2: Download the CSV data.
-            csv_resp = session.get(data_download_url, headers=headers)
-            if csv_resp.status_code != 200:
-                _LOGGER.error("Failed to download CSV data. Status code: %s", csv_resp.status_code)
+            # Download the Excel file.
+            xls_resp = session.get(data_download_url, headers=headers)
+            if xls_resp.status_code != 200:
+                _LOGGER.error("Failed to download XLS data. Status code: %s", xls_resp.status_code)
                 self._state = None
                 return
 
-            # Try decoding CSV using UTF-8; fallback to latin1 if necessary.
+            # Read the Excel file using pandas.
+            xls_file = io.BytesIO(xls_resp.content)
             try:
-                csv_text = csv_resp.content.decode("utf-8")
-            except UnicodeDecodeError:
-                _LOGGER.warning("UTF-8 decode failed, trying latin1 encoding")
-                csv_text = csv_resp.content.decode("latin1")
-            
-            csv_reader = csv.reader(csv_text.splitlines())
-            rows = list(csv_reader)
-            if not rows or len(rows) < 2:
-                _LOGGER.error("CSV data is empty or missing data rows.")
+                df = pd.read_excel(xls_file)
+            except Exception as e:
+                _LOGGER.error("Error reading Excel file: %s", e)
                 self._state = None
                 return
 
-            header = rows[0]
-            if "Consumption" not in header:
-                _LOGGER.error("CSV header does not include 'Consumption'. Header: %s", header)
+            if df.empty:
+                _LOGGER.error("Excel file is empty.")
                 self._state = None
                 return
 
-            # Use the last row (most recent data) as the latest record.
-            latest_record = rows[-1]
-            consumption_index = header.index("Consumption")
-            # Get additional weather columns if present.
-            weather_date_index = header.index("Weather Date") if "Weather Date" in header else None
-            avg_temp_index = header.index("Avg Temp") if "Avg Temp" in header else None
-            high_temp_index = header.index("High Temp") if "High Temp" in header else None
-            low_temp_index = header.index("Low Temp") if "Low Temp" in header else None
+            # For the latest sensor, use the last row (most recent record).
+            latest_record = df.iloc[-1]
+            if "Consumption" not in df.columns:
+                _LOGGER.error("Excel data does not include 'Consumption' column. Columns: %s", df.columns)
+                self._state = None
+                return
 
-            consumption_value = latest_record[consumption_index]
+            consumption_value = latest_record["Consumption"]
             self._state = consumption_value
+
             attributes = {}
-            if weather_date_index is not None:
-                attributes["weather date"] = latest_record[weather_date_index]
-            if avg_temp_index is not None:
-                attributes["Avg Temp"] = latest_record[avg_temp_index]
-            if high_temp_index is not None:
-                attributes["High Temp"] = latest_record[high_temp_index]
-            if low_temp_index is not None:
-                attributes["Low Temp"] = latest_record[low_temp_index]
+            if "Weather Date" in df.columns:
+                attributes["weather date"] = latest_record["Weather Date"]
+            if "Avg Temp" in df.columns:
+                attributes["Avg Temp"] = latest_record["Avg Temp"]
+            if "High Temp" in df.columns:
+                attributes["High Temp"] = latest_record["High Temp"]
+            if "Low Temp" in df.columns:
+                attributes["Low Temp"] = latest_record["Low Temp"]
             attributes["last_updated"] = datetime.datetime.now().isoformat()
             self._attributes = attributes
+
             _LOGGER.debug("Updated Latest sensor state with consumption: %s", consumption_value)
         except Exception as e:
             _LOGGER.exception("Error updating AtmosEnergy Latest sensor: %s", e)
@@ -183,7 +178,7 @@ class AtmosEnergyCumulativeSensor(Entity):
         return self._attributes
 
     def update(self):
-        """Fetch and compute cumulative consumption data."""
+        """Fetch and compute cumulative consumption data from the Excel file."""
         try:
             login_page_url = "https://www.atmosenergy.com/accountcenter/logon/login.html"
             login_url = "https://www.atmosenergy.com/accountcenter/logon/authenticate.html"
@@ -234,41 +229,34 @@ class AtmosEnergyCumulativeSensor(Entity):
                 self._state = None
                 return
 
-            csv_resp = session.get(data_download_url, headers=headers)
-            if csv_resp.status_code != 200:
-                _LOGGER.error("Failed to download CSV data. Status code: %s", csv_resp.status_code)
+            xls_resp = session.get(data_download_url, headers=headers)
+            if xls_resp.status_code != 200:
+                _LOGGER.error("Failed to download XLS data. Status code: %s", xls_resp.status_code)
                 self._state = None
                 return
 
+            xls_file = io.BytesIO(xls_resp.content)
             try:
-                csv_text = csv_resp.content.decode("utf-8")
-            except UnicodeDecodeError:
-                _LOGGER.warning("UTF-8 decode failed, trying latin1 encoding")
-                csv_text = csv_resp.content.decode("latin1")
-            
-            csv_reader = csv.reader(csv_text.splitlines())
-            rows = list(csv_reader)
-            if not rows or len(rows) < 2:
-                _LOGGER.error("CSV data is empty or missing data rows.")
+                df = pd.read_excel(xls_file)
+            except Exception as e:
+                _LOGGER.error("Error reading Excel file: %s", e)
                 self._state = None
                 return
 
-            header = rows[0]
-            if "Consumption" not in header:
-                _LOGGER.error("CSV header does not include 'Consumption'. Header: %s", header)
+            if df.empty:
+                _LOGGER.error("Excel file is empty.")
                 self._state = None
                 return
 
-            cumulative = 0.0
-            for row in rows[1:]:
-                try:
-                    value = float(row[header.index("Consumption")])
-                    cumulative += value
-                except ValueError:
-                    _LOGGER.warning("Skipping invalid consumption value in row: %s", row)
+            if "Consumption" not in df.columns:
+                _LOGGER.error("Excel data does not include 'Consumption' column. Columns: %s", df.columns)
+                self._state = None
+                return
+
+            cumulative = df["Consumption"].sum()
             self._state = cumulative
             self._attributes["last_updated"] = datetime.datetime.now().isoformat()
-            self._attributes["number_of_days"] = len(rows) - 1
+            self._attributes["number_of_days"] = len(df)
             _LOGGER.debug("Updated Cumulative sensor state with consumption: %s", cumulative)
         except Exception as e:
             _LOGGER.exception("Error updating AtmosEnergy Cumulative sensor: %s", e)
