@@ -1,24 +1,10 @@
 """The AtmosEnergy integration."""
 import logging
-from homeassistant.core import HomeAssistant
-from homeassistant.config_entries import ConfigEntry
+import requests
+from bs4 import BeautifulSoup
 
 _LOGGER = logging.getLogger(__name__)
 DOMAIN = "atmosenergy"
-
-async def async_setup(hass: HomeAssistant, config: dict) -> bool:
-    """Set up the AtmosEnergy component (YAML configuration is not used)."""
-    return True
-
-async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
-    """Set up AtmosEnergy from a config entry."""
-    # Forward the entry to the sensor platform.
-    await hass.config_entries.async_forward_entry_setups(config_entry, ["sensor"])
-    return True
-
-async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
-    """Unload an AtmosEnergy config entry."""
-    return await hass.config_entries.async_unload_platforms(config_entry, ["sensor"])
 
 def validate_credentials(username, password):
     """Validate credentials by attempting to log in to AtmosEnergy."""
@@ -42,15 +28,15 @@ def validate_credentials(username, password):
             "Sec-Fetch-Site": "same-origin",
             "Sec-Fetch-User": "?1",
             "Upgrade-Insecure-Requests": "1",
-            "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                           "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"),
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+            ),
             "sec-ch-ua": "\"Not(A:Brand\";v=\"99\", \"Google Chrome\";v=\"133\", \"Chromium\";v=\"133\"",
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": "macOS"
         }
-
-
-session = requests.Session()
+        session = requests.Session()
         resp = session.get(login_page_url, headers=headers)
         if resp.status_code != 200:
             _LOGGER.error("Error fetching login page: %s", resp.status_code)
@@ -73,3 +59,16 @@ session = requests.Session()
     except Exception as e:
         _LOGGER.exception("Error validating credentials: %s", e)
         return False
+
+async def async_setup(hass, config):
+    """Set up the AtmosEnergy component (YAML configuration is not used)."""
+    return True
+
+async def async_setup_entry(hass, config_entry):
+    """Set up AtmosEnergy from a config entry."""
+    await hass.config_entries.async_forward_entry_setups(config_entry, ["sensor"])
+    return True
+
+async def async_unload_entry(hass, config_entry):
+    """Unload an AtmosEnergy config entry."""
+    return await hass.config_entries.async_unload_platforms(config_entry, ["sensor"])
