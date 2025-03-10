@@ -3,8 +3,27 @@ import logging
 import requests
 from bs4 import BeautifulSoup
 
+from homeassistant.core import HomeAssistant
+from homeassistant.config_entries import ConfigEntry
+
 _LOGGER = logging.getLogger(__name__)
 DOMAIN = "atmosenergy"
+
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the AtmosEnergy component from YAML configuration if needed."""
+    return True
+
+async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+    """Set up AtmosEnergy from a config entry."""
+    hass.async_create_task(
+        hass.config_entries.async_forward_entry_setup(config_entry, "sensor")
+    )
+    return True
+
+async def async_unload_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
+    """Unload an AtmosEnergy config entry."""
+    unload_ok = await hass.config_entries.async_forward_entry_unload(config_entry, "sensor")
+    return unload_ok
 
 def validate_credentials(username, password):
     """Validate credentials by attempting to log in to AtmosEnergy."""
