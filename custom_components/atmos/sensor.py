@@ -28,7 +28,7 @@ class AtmosEnergySensor(Entity):
         self._password = password
         self._state = None
         self._attributes = {}
-        self._name = "AtmosEnergy Usage"
+        self._name = "AtmosEnergy Consumption"
 
     @property
     def name(self):
@@ -71,8 +71,10 @@ class AtmosEnergySensor(Entity):
                 "Sec-Fetch-Site": "same-origin",
                 "Sec-Fetch-User": "?1",
                 "Upgrade-Insecure-Requests": "1",
-                "User-Agent": ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"),
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+                ),
                 "sec-ch-ua": "\"Not(A:Brand\";v=\"99\", \"Google Chrome\";v=\"133\", \"Chromium\";v=\"133\"",
                 "sec-ch-ua-mobile": "?0",
                 "sec-ch-ua-platform": "macOS"
@@ -100,29 +102,28 @@ class AtmosEnergySensor(Entity):
                 self._state = None
                 return
 
-            # Try decoding CSV with UTF-8, fallback to latin1 if that fails.
+            # Try decoding CSV using UTF-8; fallback to latin1 if necessary.
             try:
                 csv_text = csv_resp.content.decode("utf-8")
             except UnicodeDecodeError:
                 _LOGGER.warning("UTF-8 decode failed, trying latin1 encoding")
                 csv_text = csv_resp.content.decode("latin1")
             
-            import csv  # Ensure csv is imported
             csv_reader = csv.reader(csv_text.splitlines())
             rows = list(csv_reader)
 
-            if rows and "Usage" in rows[0]:
-                usage_index = rows[0].index("Usage")
+            if rows and "Consumption" in rows[0]:
+                consumption_index = rows[0].index("Consumption")
                 if len(rows) > 1:
-                    usage_value = rows[1][usage_index]
-                    self._state = usage_value
+                    consumption_value = rows[1][consumption_index]
+                    self._state = consumption_value
                     self._attributes["last_updated"] = datetime.datetime.now().isoformat()
-                    _LOGGER.debug("Updated sensor state with usage: %s", usage_value)
+                    _LOGGER.debug("Updated sensor state with consumption: %s", consumption_value)
                 else:
                     _LOGGER.warning("CSV data has no data rows.")
                     self._state = None
             else:
-                _LOGGER.error("CSV header does not include 'Usage'. Header: %s", rows[0] if rows else "Empty")
+                _LOGGER.error("CSV header does not include 'Consumption'. Header: %s", rows[0] if rows else "Empty")
                 self._state = None
         except Exception as e:
             _LOGGER.exception("Error updating AtmosEnergy sensor: %s", e)
