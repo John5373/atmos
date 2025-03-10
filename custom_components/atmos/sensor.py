@@ -49,6 +49,21 @@ class AtmosEnergyLatestSensor(Entity):
         """Return sensor attributes."""
         return self._attributes
 
+    @property
+    def device_class(self):
+        """Return the device class."""
+        return "gas"
+
+    @property
+    def state_class(self):
+        """Return the state class."""
+        return "total"
+
+    @property
+    def unit_of_measurement(self):
+        """Return the unit of measurement."""
+        return "CCF"
+
     def update(self):
         """Fetch the latest consumption data and weather information from the Excel file."""
         try:
@@ -87,7 +102,7 @@ class AtmosEnergyLatestSensor(Entity):
             }
 
             session = requests.Session()
-            # Retrieve cookies and hidden formId.
+            # Step 1: Retrieve cookies and the hidden formId.
             resp = session.get(login_page_url, headers=headers)
             soup = BeautifulSoup(resp.content, "html.parser")
             form_id_element = soup.find("input", {"name": "formId"})
@@ -110,7 +125,6 @@ class AtmosEnergyLatestSensor(Entity):
                 self._state = None
                 return
 
-            # Read the Excel file using pandas.
             xls_file = io.BytesIO(xls_resp.content)
             try:
                 df = pd.read_excel(xls_file)
@@ -124,13 +138,13 @@ class AtmosEnergyLatestSensor(Entity):
                 self._state = None
                 return
 
-            # For the latest sensor, use the last row (most recent record).
-            latest_record = df.iloc[-1]
             if "Consumption" not in df.columns:
                 _LOGGER.error("Excel data does not include 'Consumption' column. Columns: %s", df.columns)
                 self._state = None
                 return
 
+            # Use the last row (most recent record) as the latest data.
+            latest_record = df.iloc[-1]
             consumption_value = latest_record["Consumption"]
             self._state = consumption_value
 
@@ -176,6 +190,21 @@ class AtmosEnergyCumulativeSensor(Entity):
     def extra_state_attributes(self):
         """Return sensor attributes."""
         return self._attributes
+
+    @property
+    def device_class(self):
+        """Return the device class."""
+        return "gas"
+
+    @property
+    def state_class(self):
+        """Return the state class."""
+        return "total_increasing"
+
+    @property
+    def unit_of_measurement(self):
+        """Return the unit of measurement."""
+        return "CCF"
 
     def update(self):
         """Fetch and compute cumulative consumption data from the Excel file."""
