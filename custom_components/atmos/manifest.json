@@ -9,6 +9,6 @@
     "pandas",
     "xlrd"
   ],
-  "codeowners": ["@your_github_username"],
+  "codeowners": ["john5373"],
   "config_flow": true
 }
