@@ -1,1 +1,1 @@
-Pull Atmos Daily Usage and Calculate cumulative total
+Pull Atmos Daily Usage
